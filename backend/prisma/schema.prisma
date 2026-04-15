@@ -1,0 +1,115 @@
+// This is your Prisma schema file,
+// learn more about it in the docs: https://pris.ly/d/prisma-schema
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// Ticket 工单
+model Ticket {
+  id              String   @id @default(cuid())
+  content         String   @db.Text
+  status          String   @default("pending") // pending, processing, waiting_approval, completed
+  priority        String   @default("medium") // low, medium, high
+  
+  // AI 生成的内容
+  analysis        Json?
+  suggestion      String?  @db.Text
+  
+  // 安全信息
+  confidence      Float?
+  hallucination   Float?
+  requiresReview  Boolean  @default(false)
+  
+  // 人工确认
+  approvalStatus  String? // pending, approved, rejected, edited
+  edits           String?  @db.Text
+  approvedBy      String?
+  approvedAt      DateTime?
+  
+  logs            TicketLog[]
+  tokenUsage      TokenUsage[]
+  
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+
+  @@index([status])
+  @@index([createdAt])
+}
+
+// TicketLog 审计日志
+model TicketLog {
+  id          String   @id @default(cuid())
+  ticketId    String
+  ticket      Ticket   @relation(fields: [ticketId], references: [id], onDelete: Cascade)
+  
+  agentName   String   // analyzer, searcher, generator, approval
+  toolName    String?
+  actionType  String   // execute, success, error, retry
+  
+  input       Json?
+  output      Json?
+  error       String?  @db.Text
+  
+  duration    Int      // milliseconds
+  timestamp   DateTime @default(now())
+  metadata    Json?
+
+  @@index([ticketId])
+  @@index([timestamp])
+}
+
+// TokenUsage Token 追踪
+model TokenUsage {
+  id          String   @id @default(cuid())
+  ticketId    String
+  ticket      Ticket   @relation(fields: [ticketId], references: [id], onDelete: Cascade)
+  
+  model       String   // claude-3-5-sonnet-20241022
+  inputTokens Int
+  outputTokens Int
+  cost        Float    // USD
+  
+  timestamp   DateTime @default(now())
+
+  @@index([ticketId])
+  @@index([timestamp])
+}
+
+// Document 知识库文档
+model Document {
+  id          String   @id @default(cuid())
+  title       String
+  content     String   @db.Text
+  embedding   String?  @db.Text // vector JSON string
+  source      String?
+  similarity  Float?
+  
+  createdAt   DateTime @default(now())
+
+  @@index([title])
+}
+
+// ApprovalTask 人工确认任务
+model ApprovalTask {
+  id          String   @id @default(cuid())
+  ticketId    String   @unique
+  
+  suggestion  String   @db.Text
+  confidence  Float
+  reasoning   String?  @db.Text
+  
+  status      String   @default("pending") // pending, approved, rejected, edited
+  userDecision String?
+  userMods    String?  @db.Text
+  
+  expiresAt   DateTime
+  createdAt   DateTime @default(now())
+
+  @@index([status])
+}
