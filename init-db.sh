@@ -1,9 +1,9 @@
 #!/bin/bash
-# 简单的数据库设置脚本 - 复制粘贴命令运行
+# Simple database setup script - copy and paste commands to run
 # Copy and paste the following into your terminal and run with sudo
 
 # This script needs to be run with sudo
-# 运行方式: sudo bash ./init-db.sh
+# Usage: sudo bash ./init-db.sh
 
 set -e
 
