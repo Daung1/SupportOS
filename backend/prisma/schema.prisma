@@ -10,23 +10,23 @@ datasource db {
   url      = env("DATABASE_URL")
 }
 
-// Ticket 工单
+// Ticket work item
 model Ticket {
   id              String   @id @default(cuid())
   content         String   @db.Text
   status          String   @default("pending") // pending, processing, waiting_approval, completed
   priority        String   @default("medium") // low, medium, high
   
-  // AI 生成的内容
+  // AI-generated content
   analysis        Json?
   suggestion      String?  @db.Text
   
-  // 安全信息
+  // Safety metadata
   confidence      Float?
   hallucination   Float?
   requiresReview  Boolean  @default(false)
   
-  // 人工确认
+  // Human approval
   approvalStatus  String? // pending, approved, rejected, edited
   edits           String?  @db.Text
   approvedBy      String?
@@ -42,7 +42,7 @@ model Ticket {
   @@index([createdAt])
 }
 
-// TicketLog 审计日志
+// TicketLog audit trail
 model TicketLog {
   id          String   @id @default(cuid())
   ticketId    String
@@ -64,7 +64,7 @@ model TicketLog {
   @@index([timestamp])
 }
 
-// TokenUsage Token 追踪
+// TokenUsage tracking
 model TokenUsage {
   id          String   @id @default(cuid())
   ticketId    String
@@ -81,7 +81,7 @@ model TokenUsage {
   @@index([timestamp])
 }
 
-// Document 知识库文档
+// Document knowledge base entry
 model Document {
   id          String   @id @default(cuid())
   title       String
@@ -95,7 +95,7 @@ model Document {
   @@index([title])
 }
 
-// ApprovalTask 人工确认任务
+// ApprovalTask human approval task
 model ApprovalTask {
   id          String   @id @default(cuid())
   ticketId    String   @unique

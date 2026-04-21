@@ -1,97 +1,97 @@
 /**
  * Enterprise-Grade History Manager
- * 智能保存历史信息，优化 Token 使用
+ * Intelligently preserves history while optimizing token usage
  * 
- * 核心思想：
- * 1. 按优先级分类信息
- * 2. 关键信息 100% 保存
- * 3. 次要信息选择性保存
- * 4. 低优先级信息删除或摘要
+ * Core principles:
+ * 1. Classify information by priority
+ * 2. Preserve critical information 100%
+ * 3. Selectively preserve secondary information
+ * 4. Remove or summarize low-priority information
  */
 
 export interface HistoryEntry {
   iteration: number;
   timestamp: number;
   
-  // 优先级 1: 关键信息（必须保留）
-  userInput: string;                              // 原始用户问题
-  finalResult?: any;                              // 最终结果
+  // Priority 1: Critical information (must keep)
+  userInput: string;                              // Original user query
+  finalResult?: any;                              // Final result
   
-  // 优先级 2: 高价值信息（摘要保留）
-  actionType: 'CALL_TOOL' | 'FINISH' | 'RETRY';  // 动作类型
-  toolName?: string;                              // 工具名
-  toolResult?: {                                  // 工具结果（关键部分）
+  // Priority 2: High-value information (summarized)
+  actionType: 'CALL_TOOL' | 'FINISH' | 'RETRY';  // Action type
+  toolName?: string;                              // Tool name
+  toolResult?: {                                  // Tool result (key part)
     success: boolean;
-    summary?: string;                             // 摘要而非完整输出
+    summary?: string;                             // Summary instead of full output
     error?: string;
   };
   
-  // 优先级 3: 中等信息（可选保留）
-  thinking?: {                                    // 思考过程
-    summary?: string;                             // 压缩的思考
-    confidence?: number;                          // 置信度 0-1
+  // Priority 3: Medium-value information (optional)
+  thinking?: {                                    // Thought process
+    summary?: string;                             // Compressed thinking
+    confidence?: number;                          // Confidence 0-1
   };
   
-  // 优先级 4: 低价值信息（不保存）
-  // fullThought?: string;  ← 删除，太冗长
-  // detailedReasoning?: string;  ← 删除，浪费 tokens
+  // Priority 4: Low-value information (not saved)
+  // fullThought?: string;  <- Removed, too verbose
+  // detailedReasoning?: string;  <- Removed, wastes tokens
 }
 
 export class EnterpriseHistoryManager {
-  private maxHistorySize: number = 10;            // 最多保留 10 次迭代
-  private maxTokensPerEntry: number = 200;        // 每条记录最多 200 tokens
-  private fullHistory: any[] = [];                // 完整历史（仅本地调试）
-  private compressedHistory: HistoryEntry[] = []; // 压缩后的历史（发给 LLM）
+  private maxHistorySize: number = 10;            // Keep at most 10 iterations
+  private maxTokensPerEntry: number = 200;        // Max 200 tokens per entry
+  private fullHistory: any[] = [];                // Full history (local debugging only)
+  private compressedHistory: HistoryEntry[] = []; // Compressed history (sent to LLM)
 
   /**
-   * 添加新的迭代记录
+   * Add a new iteration record
    */
   addIteration(iteration: any): void {
-    // 保存完整历史用于调试
+    // Keep full history for debugging
     this.fullHistory.push(iteration);
 
-    // 提取并压缩关键信息
+    // Extract and compress key information
     const compressed = this.compressIteration(iteration);
     this.compressedHistory.push(compressed);
 
-    // 维持历史大小
+    // Maintain history size limit
     if (this.compressedHistory.length > this.maxHistorySize) {
-      // 合并最早的两条记录
+      // Merge the earliest two entries
       this.mergeEarliestEntries();
     }
   }
 
   /**
-   * 压缩单个迭代记录
-   * 关键：选择性保留信息
+   * Compress a single iteration record
+   * Key idea: selectively preserve information
    */
   private compressIteration(iteration: any): HistoryEntry {
     const compressed: HistoryEntry = {
       iteration: iteration.iteration,
       timestamp: iteration.timestamp || Date.now(),
-      userInput: iteration.userInput || '',  // 优先级 1: 必保留
+      userInput: iteration.userInput || '',  // Priority 1: must preserve
       
-      // 优先级 2: 关键信息
+      // Priority 2: key information
       actionType: this.extractActionType(iteration.action),
       toolName: iteration.action?.toolName,
       
       toolResult: iteration.observation?.success ? {
         success: true,
-        summary: this.summarizeResult(iteration.observation.output),  // 摘要
+        summary: this.summarizeResult(iteration.observation.output),  // Summary
         error: undefined,
       } : {
         success: false,
         error: iteration.observation?.error,
       },
       
-      // 优先级 3: 思考过程（只保存摘要）
+      // Priority 3: thought process (summary only)
       thinking: {
         summary: this.summarizeThinking(iteration.thought),
         confidence: this.estimateConfidence(iteration),
       },
     };
 
-    // 如果结果就是最终结果，保存它
+    // If this is the final result, preserve it
     if (iteration.action?.type === 'FINISH') {
       compressed.finalResult = iteration.action.output;
     }
@@ -100,7 +100,7 @@ export class EnterpriseHistoryManager {
   }
 
   /**
-   * 提取动作类型
+    * Extract action type
    */
   private extractActionType(action: any): 'CALL_TOOL' | 'FINISH' | 'RETRY' {
     if (!action) return 'RETRY';
@@ -110,22 +110,22 @@ export class EnterpriseHistoryManager {
   }
 
   /**
-   * 摘要化结果（关键）
-   * 原则：只保留必需的信息
+    * Summarize result (critical)
+    * Principle: keep only essential information
    */
   private summarizeResult(result: any): string {
     if (!result) return '';
     
-    // 如果是字符串，截断到 100 字符
+    // If result is a string, truncate to 100 characters
     if (typeof result === 'string') {
       return result.substring(0, 100) + (result.length > 100 ? '...' : '');
     }
 
-    // 如果是对象，只保留关键字段
+    // If result is an object, preserve only key fields
     if (typeof result === 'object') {
       const summary: any = {};
       
-      // 优先级字段
+      // Priority fields
       const priorityFields = [
         'category', 'priority', 'success', 'error',
         'status', 'id', 'type', 'action'
@@ -134,7 +134,7 @@ export class EnterpriseHistoryManager {
       for (const field of priorityFields) {
         if (result[field] !== undefined) {
           const value = result[field];
-          // 字符串字段不超过 50 字符
+          // Cap string fields at 50 characters
           if (typeof value === 'string') {
             summary[field] = value.substring(0, 50);
           } else {
@@ -143,7 +143,7 @@ export class EnterpriseHistoryManager {
         }
       }
 
-      // 如果摘要为空，返回对象的 keys
+      // If summary is empty, return top object keys
       if (Object.keys(summary).length === 0) {
         return Object.keys(result).slice(0, 3).join(', ');
       }
@@ -155,19 +155,19 @@ export class EnterpriseHistoryManager {
   }
 
   /**
-   * 摘要化思考过程
-   * 原则：保留决策关键点，删除冗余推理
+    * Summarize thinking process
+    * Principle: keep decision-critical points, remove redundant reasoning
    */
   private summarizeThinking(thought: string): string {
     if (!thought) return '';
 
-    // 1. 只保留 ACTION 行，删除完整 THOUGHT
+    // 1. Keep only ACTION line, drop full THOUGHT text
     const actionMatch = thought.match(/ACTION:\s*([^\n]+)/i);
     if (actionMatch) {
       return `Action: ${actionMatch[1].substring(0, 80)}`;
     }
 
-    // 2. 如果有关键词，提取它们
+    // 2. If keywords are present, extract matching sentence
     const keywords = ['need', 'should', 'because', 'try', 'failed', 'success'];
     const sentences = thought.split(/[.!?]\s+/);
     
@@ -179,26 +179,26 @@ export class EnterpriseHistoryManager {
       }
     }
 
-    // 3. 返回前 60 字符
+    // 3. Fallback: return first 60 characters
     return thought.substring(0, 60) + '...';
   }
 
   /**
-   * 估计置信度
-   * 帮助 LLM 理解之前的决策可信度
+   * Estimate confidence
+   * Helps the LLM understand reliability of previous decisions
    */
   private estimateConfidence(iteration: any): number {
-    // 如果成功，置信度高
+    // Successful execution -> high confidence
     if (iteration.observation?.success) {
       return 0.9;
     }
 
-    // 如果重试，置信度中等
+    // Retry action -> medium confidence
     if (iteration.action?.type === 'RETRY') {
       return 0.5;
     }
 
-    // 如果失败，置信度低
+    // Error observed -> low confidence
     if (iteration.observation?.error) {
       return 0.2;
     }
@@ -207,8 +207,8 @@ export class EnterpriseHistoryManager {
   }
 
   /**
-   * 合并最早的两条记录
-   * 当历史超过大小限制时调用
+    * Merge the earliest two entries
+    * Called when history exceeds size limit
    */
   private mergeEarliestEntries(): void {
     if (this.compressedHistory.length < 2) return;
@@ -220,12 +220,12 @@ export class EnterpriseHistoryManager {
       timestamp: first.timestamp,
       userInput: first.userInput,
       
-      // 保留最有用的信息
-      actionType: second.actionType,  // 最后的动作
+      // Preserve the most useful information
+      actionType: second.actionType,  // Latest action
       toolName: second.toolName,
       toolResult: second.toolResult?.success ? second.toolResult : first.toolResult,
       
-      // 合并思考
+      // Merge thinking summaries
       thinking: {
         summary: `Tried: ${first.actionType}. Then: ${second.actionType}`,
         confidence: ((first.thinking?.confidence || 0.5) + (second.thinking?.confidence || 0.5)) / 2,
@@ -236,8 +236,8 @@ export class EnterpriseHistoryManager {
   }
 
   /**
-   * 获取发给 LLM 的历史记录
-   * 这是真正用于 prompt 的内容
+    * Get history records to send to LLM
+    * This is the actual content used in the prompt
    */
   getForLLM(): HistoryEntry[] {
     return this.compressedHistory.map(entry => ({
@@ -248,19 +248,19 @@ export class EnterpriseHistoryManager {
       toolName: entry.toolName,
       toolResult: entry.toolResult,
       thinking: entry.thinking,
-      // 不包含 fullResult，太冗长
+      // Exclude fullResult, too verbose
     }));
   }
 
   /**
-   * 获取用于调试的完整历史
+   * Get full history for debugging
    */
   getFullHistoryForDebugging(): any[] {
     return this.fullHistory;
   }
 
   /**
-   * 估计当前历史的 token 数
+    * Estimate token count for current history
    */
   estimateTokens(): number {
     const compressed = this.compressedHistory;
@@ -286,7 +286,7 @@ export class EnterpriseHistoryManager {
   }
 
   /**
-   * 生成供 LLM 使用的历史摘要
+    * Generate history summary for LLM
    */
   generateHistorySummary(): string {
     if (this.compressedHistory.length === 0) return '';

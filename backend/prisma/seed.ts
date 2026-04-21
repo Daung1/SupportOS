@@ -1,3 +1,5 @@
+/// <reference types="node" />
+
 import { PrismaClient } from '@prisma/client';
 import { generateKnowledgeBaseDocuments, generateTicketSamples } from './seed-data-en';
 
