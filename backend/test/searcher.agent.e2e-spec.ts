@@ -22,6 +22,8 @@ import { PrismaService } from '../src/database/prisma.service';
 import { ISessionContext } from '../src/agents/core/execution-context.interface';
 import { ExecutionResult } from '../src/agents/core/types';
 
+import { ConfigService } from '@nestjs/config';
+
 describe('SearcherAgent E2E Tests', () => {
   let searcherAgent: SearcherAgent;
   let toolRegistry: ToolRegistry;
@@ -39,6 +41,16 @@ describe('SearcherAgent E2E Tests', () => {
         SearchTool,
         GeminiService,
         PrismaService,
+        {
+          provide: ConfigService,
+          useValue: {
+            get: jest.fn((key: string) => {
+              if (key === 'GEMINI_API_KEY') return 'dummy-key';
+              if (key === 'GEMINI_PROXY_URL') return undefined;
+              return undefined;
+            }),
+          },
+        },
       ],
     }).compile();
 

@@ -11,6 +11,7 @@ import { TextAnalyzerTool } from '../../tools/text-analyzer.tool';
 import { SearchTool } from '../../tools/search.tool';
 import { AnalyzerAgent } from '../impl/analyzer.agent';
 import { SearcherAgent } from '../impl/searcher.agent';
+import { GeneratorAgent } from '../impl/generator.agent';
 import { IAgent } from '../core/agent.interface';
 import { ISessionContext, ITool } from '../core/execution-context.interface';
 import { ExecutionResult, AgentResult } from '../core/types';
@@ -24,6 +25,7 @@ export class SingleAgentOrchestrator {
     private searchTool: SearchTool,
     private analyzerAgent: AnalyzerAgent,
     private searcherAgent: SearcherAgent,
+    private generatorAgent: GeneratorAgent,
   ) {}
 
   /**
@@ -128,6 +130,93 @@ export class SingleAgentOrchestrator {
       sessionId,
       taskId,
     );
+  }
+
+  /**
+   * Execute GeneratorAgent specifically
+   *
+   * Callers should seed context.state with `analyzerResult` / `searcherResult`
+   * before invocation (e.g. via the multi-agent orchestrator) so the generator
+   * can pick the best scenario.  In isolated execution the classifier will
+   * fall back to OTHER.
+   *
+   * @param input - Ticket content to generate a response for
+   * @param sessionId - Optional session ID
+   * @param taskId - Optional task ID
+   * @param seedState - Optional state to seed into the context (e.g.
+   *   analyzerResult / searcherResult from previous agents)
+   */
+  async executeGenerator(
+    input: string,
+    sessionId?: string,
+    taskId?: string,
+    seedState?: Record<string, any>,
+  ): Promise<AgentResult | ExecutionResult> {
+    if (seedState) {
+      // Attach state via a one-off wrapper - we reuse executeAgent for the
+      // common setup and then merge the seed values after context creation.
+      return this.executeAgentWithSeed(
+        this.generatorAgent,
+        input,
+        sessionId,
+        taskId,
+        seedState,
+      );
+    }
+    return this.executeAgent(this.generatorAgent, input, sessionId, taskId);
+  }
+
+  /**
+   * Execute an agent while seeding some initial context.state entries.
+   * Used by the generator path where upstream agent outputs need to be
+   * available before the TAO Loop starts.
+   */
+  private async executeAgentWithSeed(
+    agent: IAgent,
+    input: string,
+    sessionId: string | undefined,
+    taskId: string | undefined,
+    seedState: Record<string, any>,
+  ): Promise<AgentResult | ExecutionResult> {
+    const tools: ITool[] = [this.textAnalyzerTool];
+    if (agent === this.searcherAgent) {
+      tools.push(this.searchTool);
+    }
+    this.toolRegistry.registerTools(tools);
+
+    const context: ISessionContext = {
+      sessionId: sessionId || this.generateId(),
+      taskId: taskId || this.generateId(),
+      input,
+      state: new Map(Object.entries(seedState)),
+      history: [],
+      toolRegistry: this.toolRegistry,
+      modelClient: this.geminiService,
+      metadata: {
+        userId: undefined,
+        ticketId: taskId,
+        createdAt: new Date(),
+      },
+    };
+
+    try {
+      const result = await agent.execute(context);
+      const geminiTokenUsage = this.geminiService.getLastTokenUsage();
+      return {
+        ...result,
+        tokensUsed: {
+          input: geminiTokenUsage.inputTokens,
+          output: geminiTokenUsage.outputTokens,
+        },
+      };
+    } catch (error) {
+      return {
+        success: false,
+        output: null,
+        iterations: 0,
+        error: error instanceof Error ? error.message : String(error),
+      };
+    }
   }
 
   /**
