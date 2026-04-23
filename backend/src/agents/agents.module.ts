@@ -13,6 +13,11 @@ import { AnalyzerAgent } from './impl/analyzer.agent';
 import { SearcherAgent } from './impl/searcher.agent';
 import { GeneratorAgent } from './impl/generator.agent';
 import { SingleAgentOrchestrator } from './base/single-agent-orchestrator.service';
+import { DefaultPipelineProvider } from './pipeline/default-pipeline.provider';
+import {
+  MultiAgentOrchestrator,
+  PIPELINE_PROVIDER,
+} from './orchestrator/multi-agent-orchestrator.service';
 
 /**
  * AgentsModule
@@ -38,12 +43,23 @@ import { SingleAgentOrchestrator } from './base/single-agent-orchestrator.servic
     SearcherAgent,
     GeneratorAgent,
     SingleAgentOrchestrator,
+    DefaultPipelineProvider,
+    // Bind the pipeline provider token to the default implementation.
+    // Future SmartPipelineProvider can replace this line without
+    // touching MultiAgentOrchestrator.
+    {
+      provide: PIPELINE_PROVIDER,
+      useExisting: DefaultPipelineProvider,
+    },
+    MultiAgentOrchestrator,
   ],
   exports: [
     AnalyzerAgent,
     SearcherAgent,
     GeneratorAgent,
     SingleAgentOrchestrator,
+    DefaultPipelineProvider,
+    MultiAgentOrchestrator,
   ],
 })
 export class AgentsModule {}

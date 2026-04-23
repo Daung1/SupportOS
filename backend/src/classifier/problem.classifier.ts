@@ -14,15 +14,18 @@ import {
   ProblemType,
 } from './classification-rules';
 import { ISessionContext } from '../agents/core/execution-context.interface';
+import {
+  SharedState,
+  SharedAnalyzerResult,
+  SharedSearcherResult,
+} from '../agents/core/shared-state';
 
-export interface AnalyzerResult {
-  category?: string;
-  priority?: string;
-  keywords?: string[];
-  sentiment?: string;
-  summary?: string;
-  confidence?: number;
-}
+/**
+ * Legacy local alias retained for backward compatibility with existing
+ * consumers that import `AnalyzerResult` from this module.  New code
+ * should import `SharedAnalyzerResult` from `agents/core/shared-state`.
+ */
+export type AnalyzerResult = Partial<SharedAnalyzerResult>;
 
 @Injectable()
 export class ProblemClassifier {
@@ -34,9 +37,9 @@ export class ProblemClassifier {
     context: ISessionContext,
   ): Promise<ClassificationResult> {
     const input = context.input || '';
-    const analyzerResult: AnalyzerResult = context.state.get(
-      'analyzerResult',
-    ) || {};
+    const shared = SharedState.from(context);
+    const analyzerResult: Partial<SharedAnalyzerResult> =
+      shared.get('analyzerResult') ?? {};
 
     const lowerInput = input.toLowerCase();
     const keywords = analyzerResult.keywords || [];
@@ -64,7 +67,7 @@ export class ProblemClassifier {
     }
 
     // Rule 3: Check if we can answer from documentation
-    const searcherResult = context.state.get('searcherResult');
+    const searcherResult = shared.get('searcherResult');
     if (searcherResult && searcherResult.documentsFound > 0) {
       return {
         type: ProblemType.DOC_ANSWER,
@@ -193,12 +196,14 @@ export class ProblemClassifier {
   /**
    * Calculate confidence for DOC_ANSWER based on search results
    */
-  private calculateDocAnswerConfidence(searcherResult: any): number {
+  private calculateDocAnswerConfidence(
+    searcherResult: SharedSearcherResult,
+  ): number {
     if (!searcherResult.documentsFound) return 0.5;
 
     // Confidence based on number of documents found and average relevance
     const docCount = Math.min(searcherResult.documentsFound, 5);
-    const avgRelevance = searcherResult.avgRelevance || 0.7;
+    const avgRelevance = searcherResult.avgRelevance ?? 0.7;
 
     return Math.min(0.9, 0.5 + docCount * 0.1 + avgRelevance * 0.2);
   }

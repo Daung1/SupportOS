@@ -15,5 +15,10 @@ export {
 } from './similarity.utils';
 export { SimpleFilter, FilterCategory, SimpleFilterResult } from './simple.filter';
 export { FILTER_RULES, RuleCategory, FilterRuleLibrary } from './rules.data';
-
-// CascadeOrchestrator will be implemented on Day 13.
+export {
+  CascadeOrchestrator,
+  CascadeResult,
+  CascadeSource,
+  CascadeOrchestratorOptions,
+  CASCADE_ORCHESTRATOR_OPTIONS,
+} from './cascade-orchestrator.service';

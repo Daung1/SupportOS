@@ -26,6 +26,12 @@ import { Injectable, Optional } from '@nestjs/common';
 import { BaseAgent } from '../base/base.agent';
 import { ISessionContext } from '../core/execution-context.interface';
 import { TAOIteration } from '../core/types';
+import {
+  SharedState,
+  SharedClassificationResult,
+  SharedFAQResult,
+  SharedGeneratorResult,
+} from '../core/shared-state';
 import { ProblemClassifier } from '../../classifier/problem.classifier';
 import {
   ClassificationResult,
@@ -139,6 +145,7 @@ export class GeneratorAgent extends BaseAgent {
     context: ISessionContext,
     _history: TAOIteration[],
   ): Promise<string> {
+    const shared = SharedState.from(context);
     const classification = await this.problemClassifier.classifyProblem(context);
 
     let faqMatch: FAQMatchResult | undefined;
@@ -149,7 +156,7 @@ export class GeneratorAgent extends BaseAgent {
         faqMatch = await this.faqMatcher.match(context.input);
         // If FAQ matcher did not actually find a match, demote to DOC_ANSWER.
         if (!faqMatch?.matched) {
-          classification.type = context.state.get('searcherResult')
+          classification.type = shared.has('searcherResult')
             ? ProblemType.DOC_ANSWER
             : ProblemType.OTHER;
           classification.reason += ' (FAQ match failed, demoted)';
@@ -160,9 +167,15 @@ export class GeneratorAgent extends BaseAgent {
     }
 
     // Cache for downstream access and for audit log readability.
-    context.state.set('problemClassification', classification);
+    // ClassificationResult uses the ProblemType enum; its runtime values are
+    // the same strings as SharedClassificationResult's literal union, so the
+    // cast is safe at this boundary.
+    shared.set(
+      'problemClassification',
+      classification as unknown as SharedClassificationResult,
+    );
     if (faqMatch) {
-      context.state.set('faqResult', faqMatch);
+      shared.set('faqResult', faqMatch as SharedFAQResult);
     }
 
     const payload = {
@@ -266,6 +279,14 @@ export class GeneratorAgent extends BaseAgent {
           break;
       }
 
+      // Publish the final generator output to shared state so downstream
+      // consumers (SafetyGate, orchestrator) can pick it up without knowing
+      // which scenario ran.
+      SharedState.from(context).set(
+        'generatorResult',
+        output as unknown as SharedGeneratorResult,
+      );
+
       return { success: true, output, shouldStop: true };
     } catch (error) {
       return {
@@ -283,10 +304,12 @@ export class GeneratorAgent extends BaseAgent {
     context: ISessionContext,
     action: GeneratorAction,
   ): GeneratorAgentOutput {
-    // Prefer the full FAQMatchResult stored in context.state (it carries the
+    // Prefer the full FAQMatchResult stored on shared state (it carries the
     // answer text).  The thought payload only keeps a simplified view.
+    const shared = SharedState.from(context);
     const faq: FAQMatchResult | undefined =
-      context.state.get('faqResult') ?? action.faqMatch;
+      (shared.get('faqResult') as FAQMatchResult | undefined) ??
+      action.faqMatch;
 
     return {
       type: 'FAQ',
@@ -309,7 +332,10 @@ export class GeneratorAgent extends BaseAgent {
     context: ISessionContext,
     action: GeneratorAction,
   ): Promise<GeneratorAgentOutput> {
-    const searcherResult = context.state.get('searcherResult') || {};
+    const shared = SharedState.from(context);
+    const searcherResult = shared.get('searcherResult') ?? {
+      documentsFound: 0,
+    };
     const documents: any[] = Array.isArray(searcherResult.documents)
       ? searcherResult.documents
       : Array.isArray(searcherResult.sources)
@@ -360,7 +386,8 @@ export class GeneratorAgent extends BaseAgent {
     context: ISessionContext,
     action: GeneratorAction,
   ): GeneratorAgentOutput {
-    const analyzerResult = context.state.get('analyzerResult') || {};
+    const shared = SharedState.from(context);
+    const analyzerResult = shared.get('analyzerResult') ?? ({} as any);
     const metadata: Record<string, any> = context.metadata ?? {};
 
     const bugReport = this.techAssignmentManager.createBugReport(
@@ -422,8 +449,9 @@ export class GeneratorAgent extends BaseAgent {
     context: ISessionContext,
     action: GeneratorAction,
   ): Promise<GeneratorAgentOutput> {
-    const analyzerResult = context.state.get('analyzerResult') || {};
-    const searcherResult = context.state.get('searcherResult');
+    const shared = SharedState.from(context);
+    const analyzerResult = shared.get('analyzerResult') ?? ({} as any);
+    const searcherResult = shared.get('searcherResult');
 
     const suggestion = await this.generateSuggestion(context);
 
@@ -434,10 +462,11 @@ export class GeneratorAgent extends BaseAgent {
       },
     ];
 
-    if (searcherResult?.documents?.length > 0) {
+    const relatedDocCount = searcherResult?.documents?.length ?? 0;
+    if (relatedDocCount > 0) {
       nextSteps.push({
         action: 'Review related documents',
-        note: `${searcherResult.documents.length} related document(s) were found. Check whether any of them applies.`,
+        note: `${relatedDocCount} related document(s) were found. Check whether any of them applies.`,
       });
     }
 
