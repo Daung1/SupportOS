@@ -84,10 +84,15 @@ IMPORTANT:
         }
       }
 
-      const response = await context.modelClient.call(messages, undefined, {
-        temperature: 0.2,  // lower temperature - more deterministic responses
-        maxTokens: 500,    // reduce max tokens
-      });
+      const response = await context.modelClient.call(
+        messages,
+        undefined,
+        {
+          temperature: 0.2,  // lower temperature - more deterministic responses
+          maxTokens: 500,    // reduce max tokens
+        },
+        this.buildCallContext(context),
+      );
 
       return response;
     } catch (error) {

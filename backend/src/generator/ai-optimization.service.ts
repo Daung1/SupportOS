@@ -5,7 +5,7 @@
  */
 
 import { Inject, Injectable } from '@nestjs/common';
-import { IModelClient } from '../agents/core/model-client.interface';
+import { IModelClient, ModelCallContext } from '../agents/core/model-client.interface';
 
 export const MODEL_CLIENT_TOKEN = 'IModelClient';
 
@@ -24,6 +24,12 @@ export interface OptimizationRequest {
   type: OptimizationType;
   customInstruction?: string;
   context?: string;
+  /**
+   * Optional attribution passed through to the model client so the
+   * TokenTracker can bill this call against a session / ticket.
+   * When omitted, the LLM call still runs but usage is not recorded.
+   */
+  callContext?: ModelCallContext;
 }
 
 export interface OptimizedContent {
@@ -61,6 +67,10 @@ export class AIOptimizationService {
         {
           temperature: 0.7,
           maxTokens: 1000,
+        },
+        {
+          ...(request.callContext ?? {}),
+          agentName: request.callContext?.agentName ?? 'ai-optimization',
         },
       );
 

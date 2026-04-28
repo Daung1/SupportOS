@@ -4,21 +4,28 @@
  * Handles all LLM calls, token counting, and response parsing
  */
 
-import { Injectable, OnModuleInit } from '@nestjs/common';
+import { Inject, Injectable, Logger, OnModuleInit, Optional } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
-import { IModelClient } from '../agents/core/model-client.interface';
+import { IModelClient, ModelCallContext } from '../agents/core/model-client.interface';
 import {
   GoogleGenerativeAI,
   Content,
 } from '@google/generative-ai';
+import { ITokenRecorder, TOKEN_RECORDER } from '../tokens/token-recorder.interface';
 
 @Injectable()
 export class GeminiService implements OnModuleInit, IModelClient {
+  private readonly logger = new Logger(GeminiService.name);
   private client!: GoogleGenerativeAI;
   private model = 'gemini-2.5-flash-lite';
   private lastTokenUsage = { inputTokens: 0, outputTokens: 0 };
 
-  constructor(private configService: ConfigService) {}
+  constructor(
+    private configService: ConfigService,
+    @Optional()
+    @Inject(TOKEN_RECORDER)
+    private readonly tokenRecorder?: ITokenRecorder,
+  ) {}
 
   onModuleInit() {
     const apiKey = this.configService.get<string>('GEMINI_API_KEY');
@@ -43,6 +50,7 @@ export class GeminiService implements OnModuleInit, IModelClient {
       maxTokens?: number;
       topP?: number;
     },
+    callContext?: ModelCallContext,
   ): Promise<string> {
     try {
       const model = this.client.getGenerativeModel({
@@ -89,10 +97,42 @@ export class GeminiService implements OnModuleInit, IModelClient {
         outputTokens: estimatedOutputTokens,
       };
 
+      this.recordUsage(estimatedInputTokens, estimatedOutputTokens, callContext);
+
       return responseText;
     } catch (error) {
       throw new Error(
         `Gemini API call failed: ${error instanceof Error ? error.message : String(error)}`,
+      );
+    }
+  }
+
+  /**
+   * Forward per-call token usage to the TokenTracker if a recorder is
+   * wired and a sessionId was supplied.  Silent no-op otherwise so the
+   * service works stand-alone in tests and CLI contexts.
+   */
+  private recordUsage(
+    inputTokens: number,
+    outputTokens: number,
+    callContext?: ModelCallContext,
+  ): void {
+    if (!this.tokenRecorder) return;
+    if (!callContext?.sessionId) return;
+    try {
+      this.tokenRecorder.record({
+        sessionId: callContext.sessionId,
+        agentName: callContext.agentName,
+        ticketId: callContext.ticketId,
+        model: this.model,
+        inputTokens,
+        outputTokens,
+        timestamp: Date.now(),
+      });
+    } catch (err) {
+      // Recording must never break the LLM call path.
+      this.logger.warn(
+        `TokenRecorder.record() threw; ignoring: ${err instanceof Error ? err.message : String(err)}`,
       );
     }
   }

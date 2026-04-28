@@ -66,7 +66,18 @@ export interface PipelineLogEvent {
     | 'cascade.level3_entry'
     | 'cascade.level3_complete'
     | 'cascade.end'
-    | 'cascade.error';
+    | 'cascade.error'
+    // Queue (ConcurrentOrchestrator) events let the log reader
+    // reconstruct "when was the ticket accepted, how long did it wait
+    // in the queue, did it eventually succeed / fail / enter DLQ".
+    | 'queue.submit'
+    | 'queue.start'
+    | 'queue.success'
+    | 'queue.failure'
+    | 'queue.retry'
+    | 'queue.dlq'
+    | 'queue.batch.start'
+    | 'queue.batch.end';
   payload?: Record<string, any>;
   timestamp: number;
 }

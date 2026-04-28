@@ -14,10 +14,10 @@ export class AppController {
     return this.appService.getHello();
   }
 
-  @Get('health')
-  healthCheck(): { status: string; timestamp: string } {
-    return this.appService.healthCheck();
-  }
+  // NOTE: GET /api/health is owned by HealthController (A.8) and
+  // returns a richer payload (queue stats, latency, error rate).
+  // The legacy stub previously here was removed to avoid two
+  // controllers fighting for the same path.
 
   /**
    * Test endpoint for AnalyzerAgent

@@ -36,6 +36,7 @@ import {
   TAOIteration,
 } from '../core/types';
 import { ISessionContext } from '../core/execution-context.interface';
+import { ModelCallContext } from '../core/model-client.interface';
 
 type AgentAction = {
   type: 'FINISH' | 'CALL_TOOL' | string;
@@ -347,6 +348,20 @@ export abstract class BaseAgent extends EventEmitter implements IAgent {
       agentName: this.name,
       sessionId: context.sessionId,
       taskId: context.taskId,
+      ticketId: context.metadata?.ticketId,
+    };
+  }
+
+  /**
+   * Build a compact attribution context to pass as the 4th argument of
+   * `context.modelClient.call(...)` so the injected TokenTracker (A.6)
+   * can aggregate per-session cost.  Subclasses should always pass this
+   * when making LLM calls from inside a TAO loop.
+   */
+  protected buildCallContext(context: ISessionContext): ModelCallContext {
+    return {
+      sessionId: context.sessionId,
+      agentName: this.name,
       ticketId: context.metadata?.ticketId,
     };
   }

@@ -1,21 +1,31 @@
 /**
  * FAQMatcher - Level 1 fast matcher
- * Goal: precisely match 60% of tickets with confidence >= 0.9.
+ * Goal: precisely match a high fraction of tickets with confidence
+ * >= configured threshold (default 0.9).
  *
  * Workflow:
  * 1. Receive ticket text
- * 2. Iterate through FAQ database and compute similarity
- * 3. Find the most similar FAQ
- * 4. Return answer if similarity >= 0.9
- * 5. Otherwise return null (pass to next level)
+ * 2. For each FAQ compute a hybrid similarity score:
+ *      similarity = max(cosine(text, question),
+ *                       jaccard(text, question),
+ *                       keyword_score(text, faq.keywords))
+ *    The hybrid avoids the "short query vs long FAQ question" pitfall
+ *    where pure cosine similarity gets penalised by vector magnitude
+ *    for queries that are much shorter than the indexed question.
+ *    `faq.keywords` is the curated tag list per FAQ row and was
+ *    previously unused; the hybrid lets a 2-keyword query still hit
+ *    the right FAQ (TD-1 fix).
+ * 3. Pick the highest-scoring FAQ.
+ * 4. Return its answer if similarity >= confidenceThreshold.
+ * 5. Otherwise return matched=false with a reason that always
+ *    mentions the threshold (TD-1 fix).
  *
  * Performance targets:
  * - Response time: < 10ms
  * - Cost: $0
- * - Accuracy target: > 90% (for high-confidence matches)
  */
 
-import { calculateSimilarity } from './similarity.utils';
+import { calculateSimilarity, chineseTokenize, tokenOverlap } from './similarity.utils';
 import FAQ_DATABASE, { FAQ } from './faq.data';
 
 export interface FAQMatchResult {
@@ -50,7 +60,7 @@ export class FAQMatcher {
    * @returns FAQMatchResult
    */
   async match(ticketText: string): Promise<FAQMatchResult> {
-    const startTime = Date.now();
+    const startTime = performance.now();
 
     try {
       // Input validation
@@ -65,7 +75,8 @@ export class FAQMatcher {
       // Find the most similar FAQ
       const bestMatch = this.findBestMatch(ticketText);
 
-      const processingTime = Date.now() - startTime;
+      const processingTime = performance.now() - startTime;
+      const thresholdPct = (this.confidenceThreshold * 100).toFixed(1);
 
       // Check whether confidence meets threshold
       if (
@@ -84,26 +95,26 @@ export class FAQMatcher {
         };
       }
 
-      // Confidence below threshold
+      // Confidence below threshold (best-but-not-good-enough match found)
       if (bestMatch) {
         return {
           matched: false,
           confidence: bestMatch.similarity,
           faqId: bestMatch.faq.id,
-          reason: `translated ${(bestMatch.similarity * 100).toFixed(
+          reason: `similarity ${(bestMatch.similarity * 100).toFixed(
             1
-          )}% < ${(this.confidenceThreshold * 100).toFixed(
-            1
-          )}% threshold, pass to next level`,
+          )}% < ${thresholdPct}% threshold, pass to next level`,
           processingTime
         };
       }
 
-      // No similar FAQ found
+      // No FAQ scored above zero - still a "below threshold" outcome.
+      // We keep the word "threshold" in the reason so downstream
+      // observers can group all L1 misses uniformly.
       return {
         matched: false,
         confidence: 0,
-        reason: 'No similar FAQ found',
+        reason: `No FAQ above ${thresholdPct}% similarity threshold`,
         processingTime
       };
     } catch (error) {
@@ -111,9 +122,35 @@ export class FAQMatcher {
         matched: false,
         confidence: 0,
         reason: `Matching failed: ${error instanceof Error ? error.message : 'Unknown error'}`,
-        processingTime: Date.now() - startTime
+        processingTime: performance.now() - startTime
       };
     }
+  }
+
+  /**
+   * Hybrid similarity: max of
+   *   - cosine over chineseTokenize TF vectors (long-text strength)
+   *   - Jaccard token overlap                  (short-text resilience)
+   *   - keyword score over faq.keywords        (tag-list shortcut)
+   *
+   * The `* 0.9` factor on the keyword score prevents a single tag hit
+   * (1/N keywords) from claiming maximum confidence; it stays a strong
+   * but not absolute signal.
+   */
+  private hybridSimilarity(ticketText: string, faq: FAQ): number {
+    const cosine = calculateSimilarity(ticketText, faq.question);
+    const overlap = tokenOverlap(ticketText, faq.question);
+
+    let keywordScore = 0;
+    if (faq.keywords.length > 0) {
+      const queryTokens = new Set(chineseTokenize(ticketText));
+      const hits = faq.keywords.filter((k) =>
+        queryTokens.has(k.toLowerCase())
+      ).length;
+      keywordScore = (hits / faq.keywords.length) * 0.9;
+    }
+
+    return Math.max(cosine, overlap, keywordScore);
   }
 
   /**
@@ -129,10 +166,8 @@ export class FAQMatcher {
     let highestSimilarity = 0;
 
     for (const faq of this.faqDatabase) {
-      // Compute similarity with this FAQ
-      const similarity = calculateSimilarity(ticketText, faq.question);
+      const similarity = this.hybridSimilarity(ticketText, faq);
 
-      // Track highest similarity
       if (similarity > highestSimilarity) {
         highestSimilarity = similarity;
         bestMatch = { faq, similarity };
@@ -155,7 +190,7 @@ export class FAQMatcher {
   ): Array<{ faq: FAQ; similarity: number }> {
     const similarities = this.faqDatabase.map(faq => ({
       faq,
-      similarity: calculateSimilarity(ticketText, faq.question)
+      similarity: this.hybridSimilarity(ticketText, faq)
     }));
 
     // Sort by descending similarity

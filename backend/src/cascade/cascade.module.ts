@@ -30,7 +30,15 @@ const providers = [
   {
     provide: SimpleFilter,
     useFactory: (filterRules: any) => {
-      return new SimpleFilter(filterRules, 0.7, 0.9);
+      // Thresholds re-calibrated for the saturation confidence
+      // formula introduced by TD-1 fix:
+      //   1 keyword  -> 0.33 (below min, escalate to L3)
+      //   2 keywords -> 0.67 (accepted L2 hit)
+      //   3+         -> 1.00 (accepted L2 hit)
+      // Upper bound is 1.0 (was 0.9) because the saturation formula
+      // has no runaway behaviour to cap; previously the upper bound
+      // was a safety net against the divisor-only formula.
+      return new SimpleFilter(filterRules, 0.5, 1.0);
     },
     inject: ['FILTER_RULES'],
   },

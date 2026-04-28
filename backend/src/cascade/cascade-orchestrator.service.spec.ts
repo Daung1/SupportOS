@@ -124,7 +124,7 @@ function buildOrchestrator({
   logRepo,
   faqThreshold = 0.9,
   filterMin = 0.3,
-  filterMax = 0.95,
+  filterMax = 1.0,
 }: {
   multiAgent: StubMultiAgentOrchestrator;
   logRepo?: ILogRepository;

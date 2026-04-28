@@ -3,7 +3,10 @@
 /**
  * SimpleFilter Unit Tests
  * Test Level 2 rule-based filter logic
- * Target: 20% of tickets classified with medium confidence (0.5-0.9)
+ * Target: 20% of tickets classified with medium confidence (>= 0.5).
+ * Confidence formula uses saturation (`min(matches/3, 1.0)`), so the
+ * upper bound is set to 1.0 in tests; strong matches are no longer
+ * rejected as "too confident".
  * Performance: < 50ms per classification
  */
 
@@ -15,7 +18,7 @@ describe('SimpleFilter - Level 2 Filter', () => {
 
   beforeEach(() => {
     // Initialize with default rules and thresholds
-    filter = new SimpleFilter(FILTER_RULES, 0.5, 0.9);
+    filter = new SimpleFilter(FILTER_RULES, 0.5, 1.0);
   });
 
   describe('Classify Method', () => {
@@ -112,7 +115,7 @@ describe('SimpleFilter - Level 2 Filter', () => {
 
   describe('Confidence Thresholds', () => {
     test('should respect minimum confidence threshold', async () => {
-      const strictFilter = new SimpleFilter(FILTER_RULES, 0.8, 0.9);
+      const strictFilter = new SimpleFilter(FILTER_RULES, 0.8, 1.0);
       const result = await strictFilter.classify('ship');
 
       // Weak signal - may not classify
@@ -127,7 +130,7 @@ describe('SimpleFilter - Level 2 Filter', () => {
     });
 
     test('should handle relaxed thresholds', async () => {
-      const relaxedFilter = new SimpleFilter(FILTER_RULES, 0.1, 0.9);
+      const relaxedFilter = new SimpleFilter(FILTER_RULES, 0.1, 1.0);
       const result = await relaxedFilter.classify('shipping');
 
       expect(result.classified).toBe(true);
@@ -279,7 +282,7 @@ describe('SimpleFilter - Level 2 Filter', () => {
         policy: FILTER_RULES.policy
       };
 
-      const customFilter = new SimpleFilter(customRules, 0.5, 0.9);
+      const customFilter = new SimpleFilter(customRules, 0.5, 1.0);
       const result = await customFilter.classify('shipping tracking');
 
       expect(result.classified).toBe(true);

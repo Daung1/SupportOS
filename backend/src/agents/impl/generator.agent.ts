@@ -559,6 +559,7 @@ Rules:
         [{ role: 'user', content: userPrompt }],
         systemPrompt,
         { temperature: 0.4, maxTokens: 600 },
+        this.buildCallContext(context),
       );
       const trimmed = (response || '').trim();
       if (trimmed.length > 0) {
@@ -591,6 +592,7 @@ Be friendly and actionable, but do not invent policy specifics.`;
         [{ role: 'user', content: `Customer ticket: ${context.input}` }],
         systemPrompt,
         { temperature: 0.7, maxTokens: 400 },
+        this.buildCallContext(context),
       );
       const trimmed = (response || '').trim();
       if (trimmed.length > 0) {

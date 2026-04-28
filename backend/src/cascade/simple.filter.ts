@@ -1,19 +1,27 @@
 /**
  * SimpleFilter - Level 2 rule-based filter
- * Goal: quickly classify 20% of tickets with confidence 0.7-0.9.
+ * Goal: quickly classify ~20% of tickets with medium confidence.
  *
  * Workflow:
  * 1. Receive ticket text
- * 2. Iterate keywords by category
- * 3. Count matched keywords per category
- * 4. Compute confidence = matched keywords / total category keywords
- * 5. Return the category with highest confidence
- * 6. Return classification only if confidence is between 0.7 and 0.9
+ * 2. For each category, count matched keywords. Single-word keywords
+ *    use a tokenSet lookup; multi-word keywords (e.g. "tracking number",
+ *    "credit card") use a lowercased substring match against the raw
+ *    ticket text - the previous tokenSet-only impl could never match
+ *    multi-word keys (TD-1 fix).
+ * 3. Compute confidence with a saturation formula:
+ *      confidence = min(matchedKeywords.length / 3, 1.0)
+ *    Rationale: hitting 3 distinct keywords is enough to be sure of
+ *    the category. The old formula `matched / totalCategoryKeywords`
+ *    was dominated by category size (60+ keywords) and never reached
+ *    the configured threshold band. (TD-1 fix.)
+ * 4. Return the category with highest confidence
+ * 5. Accept the classification only if confidence is within
+ *    [confidenceThresholdMin, confidenceThresholdMax].
  *
  * Performance targets:
  * - Response time: < 50ms
  * - Cost: $0
- * - Accuracy target: > 80% (for medium-confidence matches)
  */
 
 import { chineseTokenize } from './similarity.utils';
@@ -56,7 +64,7 @@ export class SimpleFilter {
    * @returns SimpleFilterResult
    */
   async classify(ticketText: string): Promise<SimpleFilterResult> {
-    const startTime = Date.now();
+    const startTime = performance.now();
 
     try {
       // Input validation
@@ -65,16 +73,18 @@ export class SimpleFilter {
           classified: false,
           confidence: 0,
           reason: 'Ticket text is empty',
-          processingTime: Date.now() - startTime
+          processingTime: performance.now() - startTime
         };
       }
 
-      // Tokenization
+      // Tokenization (single-word keywords) + lowercased raw text
+      // (multi-word keyword substring lookup).
       const tokens = chineseTokenize(ticketText);
       const tokenSet = new Set(tokens);
+      const lowerText = ticketText.toLowerCase();
 
       // Calculate score for each category
-      const categoryScores = this.calculateCategoryScores(tokenSet);
+      const categoryScores = this.calculateCategoryScores(tokenSet, lowerText);
 
       // Find highest-scoring category
       let bestCategory: FilterCategory | null = null;
@@ -91,7 +101,7 @@ export class SimpleFilter {
         }
       }
 
-      const processingTime = Date.now() - startTime;
+      const processingTime = performance.now() - startTime;
 
       // Check whether confidence is within target range
       if (
@@ -125,24 +135,30 @@ export class SimpleFilter {
         };
       }
 
-      if (bestCategory && bestConfidence < this.confidenceThresholdMin) {
+      // Below lower bound (covers both "best category was weak" AND
+      // "no category matched any keyword" - both are operationally
+      // the same outcome: cascade should escalate to L3).  Reason
+      // string always mentions "lower bound" so log readers can
+      // group L2 misses uniformly.
+      if (!bestCategory) {
         return {
           classified: false,
-          confidence: bestConfidence,
-          reason: `Confidence ${(bestConfidence * 100).toFixed(
+          confidence: 0,
+          reason: `No matching category found (below ${(this.confidenceThresholdMin * 100).toFixed(
             1
-          )}% < ${(this.confidenceThresholdMin * 100).toFixed(
-            1
-          )}% lower bound, pass to next level`,
+          )}% lower bound)`,
           processingTime
         };
       }
 
-      // No category found
       return {
         classified: false,
-        confidence: 0,
-        reason: 'No matching category found',
+        confidence: bestConfidence,
+        reason: `Confidence ${(bestConfidence * 100).toFixed(
+          1
+        )}% < ${(this.confidenceThresholdMin * 100).toFixed(
+          1
+        )}% lower bound, pass to next level`,
         processingTime
       };
     } catch (error) {
@@ -150,19 +166,42 @@ export class SimpleFilter {
         classified: false,
         confidence: 0,
         reason: `Classification failed: ${error instanceof Error ? error.message : 'Unknown error'}`,
-        processingTime: Date.now() - startTime
+        processingTime: performance.now() - startTime
       };
     }
   }
 
   /**
+   * Saturation-based confidence:
+   *   0 keywords  -> 0
+   *   1 keyword   -> 0.33
+   *   2 keywords  -> 0.67
+   *   3+ keywords -> 1.0
+   *
+   * Capped at 1.0 so dense matches don't overshoot the upper threshold.
+   */
+  private static readonly SATURATION_KEYWORDS = 3;
+  private confidenceFor(matchCount: number): number {
+    if (matchCount <= 0) return 0;
+    return Math.min(matchCount / SimpleFilter.SATURATION_KEYWORDS, 1.0);
+  }
+
+  /**
    * Calculate matching scores for each category.
    *
-   * @param tokenSet Set of tokenized ticket text
+   * Single-word keywords are looked up via tokenSet.has() (O(1)).
+   * Multi-word keywords (containing whitespace) are matched via a
+   * lowercased substring scan against the raw ticket text - they
+   * could never match the prior tokenSet-only impl, so a sizeable
+   * fraction of the rule library was effectively dead.
+   *
+   * @param tokenSet Set of tokenized ticket text (single-word lookup)
+   * @param lowerText Lowercased raw ticket text (multi-word lookup)
    * @returns Confidence and matched keywords for each category
    */
   private calculateCategoryScores(
-    tokenSet: Set<string>
+    tokenSet: Set<string>,
+    lowerText: string
   ): Record<
     string,
     { confidence: number; matchedKeywords: string[] }
@@ -173,28 +212,44 @@ export class SimpleFilter {
     > = {};
 
     for (const [categoryName, category] of Object.entries(this.rules)) {
-      const matchedKeywords: string[] = [];
-
-      // Calculate matched keywords
-      for (const keyword of category.keywords) {
-        if (tokenSet.has(keyword)) {
-          matchedKeywords.push(keyword);
-        }
-      }
-
-      // Calculate confidence (matched keywords / total keywords)
-      const confidence =
-        category.keywords.length > 0
-          ? matchedKeywords.length / category.keywords.length
-          : 0;
+      const matchedKeywords = this.matchKeywords(
+        category.keywords,
+        tokenSet,
+        lowerText
+      );
 
       scores[categoryName] = {
-        confidence,
+        confidence: this.confidenceFor(matchedKeywords.length),
         matchedKeywords
       };
     }
 
     return scores;
+  }
+
+  /** Shared keyword-matching helper; used by classify() and getDetailedScores(). */
+  private matchKeywords(
+    keywords: string[],
+    tokenSet: Set<string>,
+    lowerText: string
+  ): string[] {
+    const matched: string[] = [];
+    const seen = new Set<string>();
+
+    for (const keyword of keywords) {
+      const key = keyword.toLowerCase();
+      if (seen.has(key)) continue; // dedupe defensive
+
+      const isMultiWord = key.includes(' ') || key.includes('-');
+      const hit = isMultiWord ? lowerText.includes(key) : tokenSet.has(key);
+
+      if (hit) {
+        matched.push(keyword);
+        seen.add(key);
+      }
+    }
+
+    return matched;
   }
 
   /**
@@ -217,6 +272,7 @@ export class SimpleFilter {
   > {
     const tokens = chineseTokenize(ticketText);
     const tokenSet = new Set(tokens);
+    const lowerText = ticketText.toLowerCase();
 
     const detailed: Record<
       FilterCategory,
@@ -228,19 +284,14 @@ export class SimpleFilter {
     > = {} as any;
 
     for (const [categoryName, category] of Object.entries(this.rules)) {
-      const matchedKeywords: string[] = [];
-
-      for (const keyword of category.keywords) {
-        if (tokenSet.has(keyword)) {
-          matchedKeywords.push(keyword);
-        }
-      }
+      const matchedKeywords = this.matchKeywords(
+        category.keywords,
+        tokenSet,
+        lowerText
+      );
 
       detailed[categoryName as FilterCategory] = {
-        confidence:
-          category.keywords.length > 0
-            ? matchedKeywords.length / category.keywords.length
-            : 0,
+        confidence: this.confidenceFor(matchedKeywords.length),
         matchedKeywords,
         totalKeywords: category.keywords.length
       };

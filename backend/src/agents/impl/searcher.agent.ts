@@ -100,10 +100,15 @@ Continue searching or finish?`;
         }
       }
 
-      const response = await context.modelClient.call(messages, undefined, {
-        temperature: 0.3,
-        maxTokens: 400,
-      });
+      const response = await context.modelClient.call(
+        messages,
+        undefined,
+        {
+          temperature: 0.3,
+          maxTokens: 400,
+        },
+        this.buildCallContext(context),
+      );
 
       return response;
     } catch (error) {
