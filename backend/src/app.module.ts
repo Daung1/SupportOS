@@ -8,6 +8,8 @@ import { QueueModule } from './queue/queue.module';
 import { LoggerModule } from './common/logger';
 import { MetricsModule } from './common/metrics';
 import { HealthModule } from './health';
+import { TicketModule } from './ticket/ticket.module';
+import { SocketModule } from './socket/socket.module';
 
 @Module({
   imports: [
@@ -22,8 +24,10 @@ import { HealthModule } from './health';
     LoggerModule,
     MetricsModule,
     DatabaseModule,
+    SocketModule,
     AgentsModule,
     QueueModule,
+    TicketModule,
     HealthModule,
   ],
   controllers: [AppController],

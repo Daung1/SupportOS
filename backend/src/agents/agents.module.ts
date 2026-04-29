@@ -10,6 +10,7 @@ import { ClassifierModule } from '../classifier/classifier.module';
 import { GeneratorSupportModule } from '../generator/generator.module';
 import { CascadeModule } from '../cascade/cascade.module';
 import { TokensModule } from '../tokens/tokens.module';
+import { SafetyModule } from '../safety/safety.module';
 import { AnalyzerAgent } from './impl/analyzer.agent';
 import { SearcherAgent } from './impl/searcher.agent';
 import { GeneratorAgent } from './impl/generator.agent';
@@ -39,6 +40,7 @@ import {
     GeneratorSupportModule,
     CascadeModule,
     TokensModule,
+    SafetyModule,
   ],
   providers: [
     AnalyzerAgent,
