@@ -1,4 +1,4 @@
-import { ApiProperty } from '@nestjs/swagger';
+import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
 import { IsIn, IsNotEmpty, IsOptional, IsString, MaxLength } from 'class-validator';
 
 export class CreateTicketDto {
@@ -20,4 +20,14 @@ export class CreateTicketDto {
   @IsOptional()
   @IsIn(['low', 'medium', 'high'])
   priority?: 'low' | 'medium' | 'high';
+
+  @ApiPropertyOptional({
+    description:
+      'Identity of the submitting user (lightweight, no auth). Unknown ids are silently dropped.',
+    example: 'user-alice',
+  })
+  @IsOptional()
+  @IsString()
+  @MaxLength(64)
+  userId?: string;
 }

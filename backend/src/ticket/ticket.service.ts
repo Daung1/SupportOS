@@ -1,4 +1,9 @@
-import { Injectable, Logger, NotFoundException } from '@nestjs/common';
+import {
+  BadRequestException,
+  Injectable,
+  Logger,
+  NotFoundException,
+} from '@nestjs/common';
 import { Prisma } from '@prisma/client';
 import {
   ConcurrentOrchestrator,
@@ -6,6 +11,7 @@ import {
 } from '../queue/concurrent-orchestrator.service';
 import { CascadeResult } from '../cascade/cascade-orchestrator.service';
 import { TicketRepository, TicketWithRelations } from './ticket.repository';
+import { UserService } from '../user/user.service';
 import { CreateTicketDto } from './dto/create-ticket.dto';
 
 @Injectable()
@@ -15,6 +21,7 @@ export class TicketService {
   constructor(
     private readonly ticketRepository: TicketRepository,
     private readonly concurrentOrchestrator: ConcurrentOrchestrator,
+    private readonly userService: UserService,
   ) {}
 
   /**
@@ -23,9 +30,13 @@ export class TicketService {
    */
   async create(dto: CreateTicketDto) {
     const priority = dto.priority ?? 'medium';
+    // Validate optional userId; unknown ids are silently dropped so the
+    // ticket still gets created (legacy callers without identity work).
+    const userId = await this.userService.resolveOptional(dto.userId);
     const ticket = await this.ticketRepository.create({
       content: dto.content,
       priority,
+      userId,
     });
     this.dispatchProcessing(ticket.id, dto.content, priority);
     return ticket;
@@ -41,14 +52,26 @@ export class TicketService {
     return created;
   }
 
-  async list(page: number, limit: number, status?: string) {
+  async list(
+    page: number,
+    limit: number,
+    status?: string,
+    userId?: string,
+    assigneeId?: string,
+  ) {
     const safePage = page < 1 ? 1 : page;
     const safeLimit = Math.min(Math.max(limit, 1), 100);
     const skip = (safePage - 1) * safeLimit;
 
     const [rows, total] = await Promise.all([
-      this.ticketRepository.findPaged({ skip, take: safeLimit, status }),
-      this.ticketRepository.countFiltered(status),
+      this.ticketRepository.findPaged({
+        skip,
+        take: safeLimit,
+        status,
+        userId,
+        assigneeId,
+      }),
+      this.ticketRepository.countFiltered(status, userId, assigneeId),
     ]);
 
     return {
@@ -319,6 +342,37 @@ export class TicketService {
   async reject(id: string, data: { reason: string }) {
     await this.ensureExists(id);
     return this.ticketRepository.reject(id, data);
+  }
+
+  /**
+   * Assign or unassign a ticket. When assigneeId is provided, it must
+   * resolve to a User with role=supporter.
+   */
+  async assign(id: string, assigneeId: string | null | undefined) {
+    await this.ensureExists(id);
+
+    // Empty/null/undefined → unassign.
+    const trimmed = typeof assigneeId === 'string' ? assigneeId.trim() : '';
+    if (!trimmed) {
+      return this.ticketRepository.assign(id, null);
+    }
+
+    const supporter = await this.userService.getById(trimmed);
+    if (supporter.role !== 'supporter') {
+      throw new BadRequestException(
+        `User "${trimmed}" cannot be assigned: role is "${supporter.role}", expected "supporter"`,
+      );
+    }
+
+    return this.ticketRepository.assign(id, supporter.id);
+  }
+
+  /**
+   * Hard-delete a ticket and all of its dependent rows (logs, token usage).
+   */
+  async remove(id: string) {
+    await this.ensureExists(id);
+    return this.ticketRepository.delete(id);
   }
 
   /**

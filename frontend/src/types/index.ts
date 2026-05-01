@@ -85,13 +85,33 @@ export interface AnalysisResult extends GeneratorAgentOutput {
   processedAt?: string;
 }
 
+// Lightweight identity returned by /api/users
+export type UserRole = 'user' | 'supporter';
+
+export interface User {
+  id: string;
+  name: string;
+  email?: string | null;
+  role: UserRole;
+  createdAt?: string;
+  updatedAt?: string;
+}
+
 // Core domain types
 export interface Ticket {
   id: string;
   content: string;
   status: TicketStatus;
   priority?: 'low' | 'medium' | 'high';
-  
+
+  // Submitting user (lightweight identity, no auth)
+  userId?: string | null;
+  user?: User | null;
+
+  // Assigned supporter
+  assigneeId?: string | null;
+  assignee?: User | null;
+
   // Processing results
   analysis?: any;
   suggestion?: string;
@@ -166,6 +186,7 @@ export interface TicketDetail {
 export interface CreateTicketRequest {
   content: string;
   priority?: 'low' | 'medium' | 'high';
+  userId?: string;
 }
 
 export interface ApproveTicketRequest {

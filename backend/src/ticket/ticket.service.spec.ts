@@ -5,6 +5,7 @@ import {
 } from '../queue/concurrent-orchestrator.service';
 import { TicketRepository } from './ticket.repository';
 import { TicketService } from './ticket.service';
+import { UserService } from '../user/user.service';
 
 describe('TicketService', () => {
   let service: TicketService;
@@ -21,6 +22,7 @@ describe('TicketService', () => {
     | 'updateOutcome'
   >>;
   let orchestrator: { submit: jest.Mock };
+  let userService: { resolveOptional: jest.Mock };
 
   beforeEach(async () => {
     repository = {
@@ -36,6 +38,7 @@ describe('TicketService', () => {
     };
 
     orchestrator = { submit: jest.fn() };
+    userService = { resolveOptional: jest.fn().mockResolvedValue(null) };
 
     const module: TestingModule = await Test.createTestingModule({
       providers: [
@@ -45,6 +48,7 @@ describe('TicketService', () => {
           provide: ConcurrentOrchestrator,
           useValue: orchestrator,
         },
+        { provide: UserService, useValue: userService },
       ],
     }).compile();
 
@@ -57,6 +61,8 @@ describe('TicketService', () => {
       content: 'hello',
       status: 'processing',
       priority: 'medium',
+      userId: null,
+      assigneeId: null,
       analysis: null,
       suggestion: null,
       confidence: null,
@@ -98,6 +104,7 @@ describe('TicketService', () => {
     expect(repository.create).toHaveBeenCalledWith({
       content: 'hello',
       priority: 'medium',
+      userId: null,
     });
 
     await new Promise<void>((resolve) => setImmediate(resolve));
@@ -127,6 +134,8 @@ describe('TicketService', () => {
       skip: 10,
       take: 10,
       status: undefined,
+      userId: undefined,
+      assigneeId: undefined,
     });
     expect(res.meta.page).toBe(2);
     expect(res.meta.total).toBe(0);

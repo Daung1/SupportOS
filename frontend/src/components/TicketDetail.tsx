@@ -92,6 +92,14 @@ export const TicketDetail: React.FC<TicketDetailProps> = ({
             </div>
             <p className="text-gray-600">
               Created {new Date(ticket.createdAt).toLocaleString()}
+              {ticket.user && (
+                <>
+                  {' · '}From{' '}
+                  <span className="font-medium text-gray-800">
+                    {ticket.user.name}
+                  </span>
+                </>
+              )}
             </p>
           </div>
           <button

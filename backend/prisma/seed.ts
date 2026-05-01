@@ -78,6 +78,15 @@ function generatePseudoEmbedding(text: string): number[] {
   return vector;
 }
 
+// Fixed demo users so the frontend can preselect identities by stable id
+// without needing a real auth flow.
+const DEMO_USERS = [
+  { id: 'user-alice', name: 'Alice (User)', email: 'alice@example.com', role: 'user' },
+  { id: 'user-bob', name: 'Bob (User)', email: 'bob@example.com', role: 'user' },
+  { id: 'supporter-charlie', name: 'Charlie (Supporter)', email: 'charlie@example.com', role: 'supporter' },
+  { id: 'supporter-dana', name: 'Dana (Supporter)', email: 'dana@example.com', role: 'supporter' },
+];
+
 async function main() {
   console.log('🌱 Starting database seed...');
 
@@ -87,6 +96,18 @@ async function main() {
   await prisma.ticketLog.deleteMany();
   await prisma.ticket.deleteMany();
   await prisma.document.deleteMany();
+  // Users are upserted (not wiped) to preserve any manual data + cascade edge-cases.
+
+  // 1.5 Upsert demo users
+  console.log('👥 Upserting demo users...');
+  for (const u of DEMO_USERS) {
+    await prisma.user.upsert({
+      where: { id: u.id },
+      update: { name: u.name, email: u.email, role: u.role },
+      create: u,
+    });
+  }
+  console.log(`   Upserted ${DEMO_USERS.length} demo users`);
 
   // 2. Generate and insert knowledge base documents with pseudo-embeddings
   console.log('📚 Generating knowledge base documents...');
@@ -115,12 +136,17 @@ async function main() {
   const tickets = generateTicketSamples();
   console.log(`   Generated ${tickets.length} tickets`);
 
-  for (const ticketData of tickets) {
+  // Distribute seeded tickets across the demo "user" role users so
+  // the per-user views in the UI are not empty out of the box.
+  const userIds = DEMO_USERS.filter((u) => u.role === 'user').map((u) => u.id);
+  for (let i = 0; i < tickets.length; i++) {
+    const ticketData = tickets[i];
     await prisma.ticket.create({
       data: {
         content: ticketData.content,
         priority: ticketData.priority,
         status: 'pending',
+        userId: userIds[i % userIds.length],
       },
     });
   }
@@ -128,7 +154,8 @@ async function main() {
 
   console.log('\n✨ Seed completed!');
   console.log(`   📚 Knowledge Base: ${documents.length} documents`);
-  console.log(`   🎫 Tickets: ${tickets.length} samples`);
+  console.log(`   👥 Users:          ${DEMO_USERS.length} demo accounts`);
+  console.log(`   🎫 Tickets:        ${tickets.length} samples`);
 }
 
 main()

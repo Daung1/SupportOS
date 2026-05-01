@@ -1,26 +1,57 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useMemo } from 'react';
 import {
   TicketDetail,
   ChatBox,
   SupporterDashboard,
 } from './components';
+import { useUsers } from './hooks/useSWRApi';
+import { User } from './types';
 
 type View = 'dashboard' | 'detail';
-type UserMode = 'user' | 'supporter';
+
+const STORAGE_KEY_USER_ID = 'supportos-current-user-id';
 
 function App() {
   const [currentView, setCurrentView] = useState<View>('dashboard');
-  const [userMode, setUserMode] = useState<UserMode>(() => {
-    const saved = localStorage.getItem('supportos-mode');
-    return (saved as UserMode) || 'user';
-  });
   const [selectedTicketId, setSelectedTicketId] = useState<string | null>(null);
   const [successMessage, setSuccessMessage] = useState<string>('');
 
-  // Save mode preference
+  const { users, isLoading: usersLoading } = useUsers();
+
+  // Load persisted identity choice from localStorage. We store only the id;
+  // the full user object is rehydrated from the /api/users response so role
+  // and display name always reflect the latest backend state.
+  const [currentUserId, setCurrentUserId] = useState<string | null>(() => {
+    return localStorage.getItem(STORAGE_KEY_USER_ID);
+  });
+
+  // Once the user list arrives, default to the first "user" if no choice
+  // exists yet, or if the saved id no longer maps to a real account.
   useEffect(() => {
-    localStorage.setItem('supportos-mode', userMode);
-  }, [userMode]);
+    if (usersLoading || users.length === 0) return;
+    const stillValid =
+      currentUserId && users.some((u) => u.id === currentUserId);
+    if (!stillValid) {
+      const fallback =
+        users.find((u) => u.role === 'user') ?? users[0];
+      setCurrentUserId(fallback.id);
+    }
+  }, [users, usersLoading, currentUserId]);
+
+  useEffect(() => {
+    if (currentUserId) {
+      localStorage.setItem(STORAGE_KEY_USER_ID, currentUserId);
+    }
+  }, [currentUserId]);
+
+  const currentUser: User | null = useMemo(
+    () => users.find((u) => u.id === currentUserId) ?? null,
+    [users, currentUserId],
+  );
+
+  // Identity drives mode: a "user" account sees the chat view, a
+  // "supporter" account sees the dashboard. No separate toggle needed.
+  const userMode = currentUser?.role ?? 'user';
 
   const handleTicketCreated = (ticketId: string) => {
     setSuccessMessage(`Ticket ${ticketId.slice(0, 8)} created successfully!`);
@@ -38,6 +69,22 @@ function App() {
     setSelectedTicketId(null);
   };
 
+  // When identity changes, reset navigation to a clean dashboard so we
+  // never end up viewing another account's ticket detail.
+  const handleSwitchUser = (id: string) => {
+    setCurrentUserId(id);
+    setCurrentView('dashboard');
+    setSelectedTicketId(null);
+  };
+
+  // Group users by role for the dropdown so user/supporter accounts
+  // are visually separated.
+  const groupedUsers = useMemo(() => {
+    const userAccounts = users.filter((u) => u.role === 'user');
+    const supporterAccounts = users.filter((u) => u.role === 'supporter');
+    return { userAccounts, supporterAccounts };
+  }, [users]);
+
   return (
     <div className="min-h-screen bg-gray-100">
       {/* Header */}
@@ -48,42 +95,52 @@ function App() {
               <h1 className="text-2xl font-bold text-gray-900">
                 🚀 SupportOS
               </h1>
-              <p className="text-sm text-gray-600">
+              <p className="text-sm text-gray-600 hidden md:block">
                 AI-powered Support Ticket System
               </p>
             </div>
-            
-            {/* Mode Toggle */}
+
             <div className="flex items-center gap-4">
-              <div className="flex gap-2 bg-gray-100 p-1 rounded-lg">
-                <button
-                  onClick={() => {
-                    setUserMode('user');
-                    setCurrentView('dashboard');
-                  }}
-                  className={`px-4 py-2 rounded font-medium transition-colors ${
-                    userMode === 'user'
-                      ? 'bg-blue-600 text-white'
-                      : 'text-gray-700 hover:bg-gray-200'
-                  }`}
+              {/* Identity switcher */}
+              <div className="flex items-center gap-2">
+                <label
+                  htmlFor="user-switcher"
+                  className="text-sm font-medium text-gray-600 whitespace-nowrap"
                 >
-                  💬 User
-                </button>
-                <button
-                  onClick={() => {
-                    setUserMode('supporter');
-                    setCurrentView('dashboard');
-                  }}
-                  className={`px-4 py-2 rounded font-medium transition-colors ${
-                    userMode === 'supporter'
-                      ? 'bg-blue-600 text-white'
-                      : 'text-gray-700 hover:bg-gray-200'
-                  }`}
+                  Acting as:
+                </label>
+                <select
+                  id="user-switcher"
+                  value={currentUserId ?? ''}
+                  onChange={(e) => handleSwitchUser(e.target.value)}
+                  disabled={usersLoading || users.length === 0}
+                  className="px-3 py-2 border border-gray-300 rounded-lg bg-white text-sm focus:ring-2 focus:ring-blue-500 focus:border-transparent min-w-[200px]"
                 >
-                  👤 Supporter
-                </button>
+                  {usersLoading && <option value="">Loading…</option>}
+                  {!usersLoading && users.length === 0 && (
+                    <option value="">No users (run db:seed)</option>
+                  )}
+                  {groupedUsers.userAccounts.length > 0 && (
+                    <optgroup label="💬 Users">
+                      {groupedUsers.userAccounts.map((u) => (
+                        <option key={u.id} value={u.id}>
+                          {u.name}
+                        </option>
+                      ))}
+                    </optgroup>
+                  )}
+                  {groupedUsers.supporterAccounts.length > 0 && (
+                    <optgroup label="👤 Supporters">
+                      {groupedUsers.supporterAccounts.map((u) => (
+                        <option key={u.id} value={u.id}>
+                          {u.name}
+                        </option>
+                      ))}
+                    </optgroup>
+                  )}
+                </select>
               </div>
-              
+
               <button
                 onClick={() => setCurrentView('dashboard')}
                 className={`px-4 py-2 rounded-lg font-medium transition-colors ${
@@ -108,12 +165,19 @@ function App() {
           </div>
         )}
 
-        {/* User Mode */}
-        {userMode === 'user' && (
+        {/* Wait for identity to be hydrated before rendering anything that
+            depends on userId — avoids a flash of "all tickets" before the
+            per-user filter takes effect. */}
+        {!currentUser ? (
+          <div className="text-center py-20 text-gray-500">
+            <p>Loading identity…</p>
+          </div>
+        ) : userMode === 'user' ? (
           <>
             {currentView === 'dashboard' && (
               <div className="max-w-2xl mx-auto">
                 <ChatBox
+                  currentUser={currentUser}
                   onTicketCreated={handleTicketCreated}
                   onError={(error) => {
                     alert(`Error: ${error}`);
@@ -137,13 +201,12 @@ function App() {
               </div>
             )}
           </>
-        )}
-
-        {/* Supporter Mode */}
-        {userMode === 'supporter' && (
+        ) : (
+          // Supporter mode
           <>
             {currentView === 'dashboard' && (
               <SupporterDashboard
+                currentUser={currentUser}
                 onSelectTicket={handleSelectTicket}
                 onApproveTicket={(ticketId) => {
                   alert(`Approved: ${ticketId}`);
@@ -178,7 +241,15 @@ function App() {
       <footer className="bg-white border-t border-gray-200 py-6 mt-12">
         <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
           <p className="text-center text-sm text-gray-600">
-            SupportOS © 2026 | Enterprise AI Support System | Mode: {userMode === 'user' ? '💬 User' : '👤 Supporter'}
+            SupportOS © 2026 | Enterprise AI Support System
+            {currentUser && (
+              <>
+                {' | '}Signed in as{' '}
+                <span className="font-medium">
+                  {currentUser.name}
+                </span>
+              </>
+            )}
           </p>
         </div>
       </footer>

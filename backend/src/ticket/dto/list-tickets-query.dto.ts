@@ -24,4 +24,20 @@ export class ListTicketsQueryDto {
   @IsOptional()
   @IsString()
   status?: string;
+
+  @ApiPropertyOptional({
+    description:
+      'Restrict results to tickets submitted by this user id. Used by the per-user chat history view.',
+  })
+  @IsOptional()
+  @IsString()
+  userId?: string;
+
+  @ApiPropertyOptional({
+    description:
+      'Restrict to tickets assigned to this supporter id. Use the literal string "none" to filter to unassigned tickets only.',
+  })
+  @IsOptional()
+  @IsString()
+  assigneeId?: string;
 }

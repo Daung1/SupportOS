@@ -1,5 +1,5 @@
 import { Injectable } from '@nestjs/common';
-import { Prisma, Ticket, TicketLog, TokenUsage } from '@prisma/client';
+import { Prisma, Ticket, TicketLog, TokenUsage, User } from '@prisma/client';
 import { TokenFlushSummary } from '../agents/orchestrator/ports/orchestrator-ports';
 import { PrismaService } from '../database/prisma.service';
 
@@ -7,6 +7,14 @@ import { PrismaService } from '../database/prisma.service';
 export type TicketWithRelations = Ticket & {
   logs: TicketLog[];
   tokenUsage: TokenUsage[];
+  user: User | null;
+  assignee: User | null;
+};
+
+/** Lightweight ticket row including the submitting user for list views. */
+export type TicketWithUser = Ticket & {
+  user: User | null;
+  assignee: User | null;
 };
 
 export interface PaginationParams {
@@ -14,42 +22,76 @@ export interface PaginationParams {
   take: number;
   /** Optional exact status filter */
   status?: string;
+  /** Optional submitting-user filter */
+  userId?: string;
+  /**
+   * Optional assigned-supporter filter. Pass the supporter id to scope to
+   * "their" tickets, or the literal string "none" to scope to unassigned.
+   */
+  assigneeId?: string;
 }
 
 @Injectable()
 export class TicketRepository {
   constructor(private readonly prisma: PrismaService) {}
 
-  create(data: { content: string; priority: string }): Promise<Ticket> {
+  create(data: {
+    content: string;
+    priority: string;
+    userId?: string | null;
+  }): Promise<Ticket> {
     return this.prisma.ticket.create({
       data: {
         content: data.content,
         priority: data.priority,
         status: 'processing',
+        userId: data.userId ?? null,
       },
     });
   }
 
-  findPaged(params: PaginationParams): Promise<Ticket[]> {
-    const where: Prisma.TicketWhereInput = {};
-    if (params.status !== undefined && params.status !== '') {
-      where.status = params.status;
-    }
+  findPaged(params: PaginationParams): Promise<TicketWithUser[]> {
+    const where = this.buildWhere(params);
 
     return this.prisma.ticket.findMany({
       where,
+      include: { user: true, assignee: true },
       orderBy: { createdAt: 'desc' },
       skip: params.skip,
       take: params.take,
     });
   }
 
-  countFiltered(status?: string): Promise<number> {
-    const where: Prisma.TicketWhereInput =
-      status !== undefined && status !== ''
-        ? { status }
-        : {};
-    return this.prisma.ticket.count({ where });
+  countFiltered(
+    status?: string,
+    userId?: string,
+    assigneeId?: string,
+  ): Promise<number> {
+    return this.prisma.ticket.count({
+      where: this.buildWhere({ status, userId, assigneeId }),
+    });
+  }
+
+  /** Shared where-clause builder for findPaged + countFiltered. */
+  private buildWhere(params: {
+    status?: string;
+    userId?: string;
+    assigneeId?: string;
+  }): Prisma.TicketWhereInput {
+    const where: Prisma.TicketWhereInput = {};
+    if (params.status !== undefined && params.status !== '') {
+      where.status = params.status;
+    }
+    if (params.userId !== undefined && params.userId !== '') {
+      where.userId = params.userId;
+    }
+    // "none" is a sentinel meaning "unassigned only".
+    if (params.assigneeId === 'none') {
+      where.assigneeId = null;
+    } else if (params.assigneeId !== undefined && params.assigneeId !== '') {
+      where.assigneeId = params.assigneeId;
+    }
+    return where;
   }
 
   findById(id: string): Promise<Ticket | null> {
@@ -62,6 +104,8 @@ export class TicketRepository {
       include: {
         logs: { orderBy: { timestamp: 'asc' } },
         tokenUsage: { orderBy: { timestamp: 'asc' } },
+        user: true,
+        assignee: true,
       },
     });
   }
@@ -147,5 +191,21 @@ export class TicketRepository {
         status: 'failed',
       },
     });
+  }
+
+  /** Set or clear the assigned supporter for a ticket. */
+  assign(id: string, assigneeId: string | null): Promise<Ticket> {
+    return this.prisma.ticket.update({
+      where: { id },
+      data: { assigneeId },
+    });
+  }
+
+  /**
+   * Hard-delete a ticket. Related TicketLog/TokenUsage rows are cascade-deleted
+   * via the schema's `onDelete: Cascade` relation.
+   */
+  delete(id: string): Promise<Ticket> {
+    return this.prisma.ticket.delete({ where: { id } });
   }
 }

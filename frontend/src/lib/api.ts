@@ -10,7 +10,9 @@ import {
   PaginatedResponse,
   TokenUsage,
   TicketLog,
-  ApiResponse
+  ApiResponse,
+  User,
+  UserRole,
 } from '../types';
 
 // directly use backend URL without proxy
@@ -123,16 +125,21 @@ export const api = {
     return normalizeTicketDetail(data);
   },
 
-  async listTickets(params?: { 
-    status?: string; 
-    page?: number; 
+  async listTickets(params?: {
+    status?: string;
+    page?: number;
     limit?: number;
     tags?: string[];
+    userId?: string;
+    /** Pass a supporter id, or the literal "none" for unassigned only. */
+    assigneeId?: string;
   }): Promise<PaginatedResponse<Ticket>> {
     const query = new URLSearchParams();
     if (params?.status) query.append('status', params.status);
     if (params?.page) query.append('page', params.page.toString());
     if (params?.limit) query.append('limit', params.limit.toString());
+    if (params?.userId) query.append('userId', params.userId);
+    if (params?.assigneeId) query.append('assigneeId', params.assigneeId);
     if (params?.tags?.length) {
       params.tags.forEach(tag => query.append('tags', tag));
     }
@@ -141,6 +148,40 @@ export const api = {
     if (!res.ok) throw new Error(`Failed to fetch tickets: ${res.statusText}`);
     const data = await res.json();
     return normalizeTicketList(data);
+  },
+
+  async assignTicket(
+    ticketId: string,
+    assigneeId: string | null,
+  ): Promise<Ticket> {
+    const res = await fetch(`${API_BASE}/tickets/${ticketId}/assign`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ assigneeId }),
+    });
+    if (!res.ok) {
+      throw new Error(`Failed to assign ticket: ${res.statusText}`);
+    }
+    const data = await res.json();
+    return data.data || data;
+  },
+
+  async deleteTicket(ticketId: string): Promise<void> {
+    const res = await fetch(`${API_BASE}/tickets/${ticketId}`, {
+      method: 'DELETE',
+    });
+    if (!res.ok && res.status !== 204) {
+      throw new Error(`Failed to delete ticket: ${res.statusText}`);
+    }
+  },
+
+  async listUsers(role?: UserRole): Promise<User[]> {
+    const query = new URLSearchParams();
+    if (role) query.append('role', role);
+    const res = await fetch(`${API_BASE}/users?${query}`);
+    if (!res.ok) throw new Error(`Failed to fetch users: ${res.statusText}`);
+    const data = await res.json();
+    return (data.data || data) as User[];
   },
 
   async getTicketLogs(ticketId: string): Promise<TicketLog[]> {

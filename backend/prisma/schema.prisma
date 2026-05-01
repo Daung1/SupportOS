@@ -10,13 +10,43 @@ datasource db {
   url      = env("DATABASE_URL")
 }
 
+// Lightweight user/supporter identity (no auth, just a label for filtering and display).
+// `role` distinguishes end-user submitters from internal supporters/agents.
+model User {
+  id        String   @id @default(cuid())
+  name      String
+  email     String?  @unique
+  role      String   @default("user") // user | supporter
+
+  // Tickets the user submitted (role=user)
+  tickets         Ticket[] @relation("UserSubmittedTickets")
+  // Tickets assigned to this user for handling (role=supporter)
+  assignedTickets Ticket[] @relation("UserAssignedTickets")
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([role])
+}
+
 // Ticket work item
 model Ticket {
   id              String   @id @default(cuid())
   content         String   @db.Text
   status          String   @default("pending") // pending, processing, waiting_approval, completed
   priority        String   @default("medium") // low, medium, high
-  
+
+  // Submitting user (nullable for backwards compatibility with legacy rows).
+  userId          String?
+  user            User?    @relation("UserSubmittedTickets", fields: [userId], references: [id])
+
+  // Assigned supporter (nullable). When set, this ticket appears in that
+  // supporter's "My Tickets" view. Setting is null on user delete to avoid
+  // dangling references — handled at app level since SetNull on optional
+  // relation is the Prisma default for nullable foreign keys.
+  assigneeId      String?
+  assignee        User?    @relation("UserAssignedTickets", fields: [assigneeId], references: [id])
+
   // AI-generated content
   analysis        Json?
   suggestion      String?  @db.Text
@@ -40,6 +70,8 @@ model Ticket {
 
   @@index([status])
   @@index([createdAt])
+  @@index([userId])
+  @@index([assigneeId])
 }
 
 // TicketLog audit trail

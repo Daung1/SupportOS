@@ -13,6 +13,8 @@ import {
   PaginatedResponse,
   TokenUsage,
   TicketLog,
+  User,
+  UserRole,
 } from '../types';
 
 // Fetcher for SWR
@@ -61,6 +63,9 @@ export const useTickets = (
     page?: number;
     limit?: number;
     tags?: string[];
+    userId?: string;
+    /** Supporter id, or the literal "none" for unassigned only. */
+    assigneeId?: string;
   },
   shouldFetch = true,
 ) => {
@@ -68,6 +73,8 @@ export const useTickets = (
   if (filters?.status) query.append('status', filters.status);
   if (filters?.page) query.append('page', filters.page.toString());
   if (filters?.limit) query.append('limit', filters.limit.toString());
+  if (filters?.userId) query.append('userId', filters.userId);
+  if (filters?.assigneeId) query.append('assigneeId', filters.assigneeId);
   if (filters?.tags?.length) {
     filters.tags.forEach((tag) => query.append('tags', tag));
   }
@@ -93,6 +100,26 @@ export const useTickets = (
   };
 };
 
+// List users for the identity switcher
+export const useUsers = (role?: UserRole) => {
+  const key = role ? `/users?role=${role}` : '/users';
+  const { data, error, isLoading, mutate } = useSWR<User[]>(
+    key,
+    async (url: string) => {
+      const raw = await fetcher(url);
+      return (raw?.data ?? raw) as User[];
+    },
+    { revalidateOnFocus: false, dedupingInterval: 60000 },
+  );
+
+  return {
+    users: data || [],
+    isLoading,
+    error,
+    mutate,
+  };
+};
+
 // Create ticket mutation
 export const useCreateTicket = () => {
   const { trigger, isMutating, error } = useSWRMutation(
@@ -110,10 +137,13 @@ export const useCreateTicket = () => {
 };
 
 // Approve ticket mutation
+// NOTE: useSWRMutation requires a non-null key — using `null` causes the
+// trigger to throw "Can't trigger the mutation: missing key". The key is a
+// just a SWR cache identifier here and is never read inside the fetcher.
 export const useApproveTicket = () => {
   const { trigger, isMutating, error } = useSWRMutation(
-    null as any,
-    async (_key: unknown, { arg }: any) => {
+    'mutation/approve-ticket',
+    async (_key: string, { arg }: any) => {
       return api.approveTicket(arg.ticketId, arg.data);
     },
   ) as any;
@@ -125,11 +155,49 @@ export const useApproveTicket = () => {
   };
 };
 
+// Assign ticket to a supporter (or null to unassign)
+export const useAssignTicket = () => {
+  const { trigger, isMutating, error } = useSWRMutation(
+    'mutation/assign-ticket',
+    async (
+      _key: string,
+      { arg }: { arg: { ticketId: string; assigneeId: string | null } },
+    ) => {
+      return api.assignTicket(arg.ticketId, arg.assigneeId);
+    },
+  );
+
+  return {
+    assign: trigger as unknown as (arg: {
+      ticketId: string;
+      assigneeId: string | null;
+    }) => Promise<Ticket>,
+    isLoading: isMutating,
+    error,
+  };
+};
+
+// Hard-delete a ticket
+export const useDeleteTicket = () => {
+  const { trigger, isMutating, error } = useSWRMutation(
+    'mutation/delete-ticket',
+    async (_key: string, { arg }: { arg: { ticketId: string } }) => {
+      return api.deleteTicket(arg.ticketId);
+    },
+  );
+
+  return {
+    remove: trigger as unknown as (arg: { ticketId: string }) => Promise<void>,
+    isLoading: isMutating,
+    error,
+  };
+};
+
 // Reject ticket mutation
 export const useRejectTicket = () => {
   const { trigger, isMutating, error } = useSWRMutation(
-    null as any,
-    async (_key: unknown, { arg }: any) => {
+    'mutation/reject-ticket',
+    async (_key: string, { arg }: any) => {
       return api.rejectTicket(arg.ticketId, arg.data);
     },
   ) as any;
@@ -144,8 +212,8 @@ export const useRejectTicket = () => {
 // Chat with AI mutation
 export const useChatWithAI = () => {
   const { trigger, isMutating, error } = useSWRMutation(
-    null as any,
-    async (_key: unknown, { arg }: any) => {
+    'mutation/chat-with-ai',
+    async (_key: string, { arg }: any) => {
       return api.chatWithAI(arg.ticketId, arg.data);
     },
   ) as any;

@@ -1,6 +1,7 @@
 import {
   Body,
   Controller,
+  Delete,
   Get,
   HttpCode,
   HttpStatus,
@@ -10,6 +11,7 @@ import {
 } from '@nestjs/common';
 import {
   ApiCreatedResponse,
+  ApiNoContentResponse,
   ApiNotFoundResponse,
   ApiOkResponse,
   ApiOperation,
@@ -18,6 +20,7 @@ import {
 import { TicketService } from './ticket.service';
 import {
   ApproveTicketDto,
+  AssignTicketDto,
   BatchCreateTicketsDto,
   ChatWithAiDto,
   CreateTicketDto,
@@ -54,12 +57,21 @@ export class TicketController {
   }
 
   @Get()
-  @ApiOperation({ summary: 'List tickets (paginated, optional status)' })
+  @ApiOperation({
+    summary:
+      'List tickets (paginated, optional status / userId / assigneeId filter)',
+  })
   @ApiOkResponse({ description: 'Paginated ticket list with meta envelope' })
   list(@Query() query: ListTicketsQueryDto) {
     const page = query.page ?? 1;
     const limit = query.limit ?? 20;
-    return this.ticketService.list(page, limit, query.status);
+    return this.ticketService.list(
+      page,
+      limit,
+      query.status,
+      query.userId,
+      query.assigneeId,
+    );
   }
 
   @Get(':id')
@@ -116,5 +128,25 @@ export class TicketController {
   @ApiNotFoundResponse()
   chatWithAi(@Param('id') id: string, @Body() dto: ChatWithAiDto) {
     return this.ticketService.chatWithAi(id, dto.message);
+  }
+
+  @Post(':id/assign')
+  @HttpCode(HttpStatus.OK)
+  @ApiOperation({
+    summary: 'Assign ticket to a supporter (or pass empty to unassign)',
+  })
+  @ApiOkResponse({ description: 'Ticket assignment updated' })
+  @ApiNotFoundResponse()
+  assign(@Param('id') id: string, @Body() dto: AssignTicketDto) {
+    return this.ticketService.assign(id, dto.assigneeId ?? null);
+  }
+
+  @Delete(':id')
+  @HttpCode(HttpStatus.NO_CONTENT)
+  @ApiOperation({ summary: 'Delete a ticket and its dependent rows' })
+  @ApiNoContentResponse({ description: 'Ticket deleted' })
+  @ApiNotFoundResponse()
+  async remove(@Param('id') id: string): Promise<void> {
+    await this.ticketService.remove(id);
   }
 }

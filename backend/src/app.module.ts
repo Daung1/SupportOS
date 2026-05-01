@@ -9,6 +9,7 @@ import { LoggerModule } from './common/logger';
 import { MetricsModule } from './common/metrics';
 import { HealthModule } from './health';
 import { TicketModule } from './ticket/ticket.module';
+import { UserModule } from './user/user.module';
 import { SocketModule } from './socket/socket.module';
 
 @Module({
@@ -27,6 +28,7 @@ import { SocketModule } from './socket/socket.module';
     SocketModule,
     AgentsModule,
     QueueModule,
+    UserModule,
     TicketModule,
     HealthModule,
   ],
