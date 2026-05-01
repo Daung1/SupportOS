@@ -31,7 +31,10 @@ import { CompositeLogRepository } from './composite-log-repository';
 @Global()
 @Module({
   providers: [
-    MetricsCollector,
+    {
+      provide: MetricsCollector,
+      useFactory: () => new MetricsCollector(),
+    },
     {
       provide: LOG_REPOSITORY,
       useFactory: (

@@ -1,21 +1,100 @@
 // Ticket status enum
-export type TicketStatus = 'pending' | 'processing' | 'completed' | 'failed' | 'review';
+export type TicketStatus =
+  | 'pending'
+  | 'processing'
+  | 'waiting_approval'
+  | 'completed'
+  | 'failed'
+  | 'review'
+  | 'dlq';
 export type ApprovalStatus = 'pending' | 'approved' | 'rejected' | 'edited';
 export type SafetyDecision = 'approve' | 'review' | 'reject';
+
+// Problem Classification Types
+export type ProblemType = 'FAQ' | 'DOC_ANSWER' | 'TECH_ISSUE' | 'OTHER';
+export type GeneratorOutputType = 'FAQ' | 'EDITABLE_RESPONSE' | 'TECH_ISSUE' | 'RESULT_WITH_SUGGESTIONS';
+
+// Analyzer & Classification Results
+export interface ClassificationResult {
+  type: ProblemType;
+  confidence: number;
+  reason: string;
+  matchedKeywords: string[];
+}
+
+export interface GeneratorSearchSource {
+  id?: string;
+  title: string;
+  relevance: number;
+  excerpt: string;
+  url?: string;
+}
+
+export interface BugReport {
+  title: string;
+  description: string;
+  severity: 'low' | 'medium' | 'high' | 'critical';
+  environment: {
+    os?: string;
+    appVersion?: string;
+    browser?: string;
+  };
+  steps?: string[];
+  expectedBehavior?: string;
+  actualBehavior?: string;
+}
+
+export interface TechAssignmentEmail {
+  to: string;
+  subject: string;
+  body: string;
+}
+
+export interface GeneratorAgentOutput {
+  // Common fields
+  type: GeneratorOutputType;
+  source: string;
+  confidence: number;
+  classification: ClassificationResult;
+  
+  // Scenario A (FAQ)
+  answer?: string;
+  faqId?: string;
+  
+  // Scenario B (DOC_ANSWER)
+  draftContent?: string;
+  editable?: boolean;
+  chatOptimizable?: boolean;
+  searchResults?: GeneratorSearchSource[];
+  editableRecordId?: string;
+  
+  // Scenario C (TECH_ISSUE)
+  bugReport?: BugReport;
+  customerEmail?: TechAssignmentEmail;
+  
+  // Scenario D (RESULT_WITH_SUGGESTIONS)
+  suggestion?: string;
+  nextSteps?: Array<{
+    action: string;
+    note: string;
+  }>;
+}
+
+export interface AnalysisResult extends GeneratorAgentOutput {
+  // Extended for full analysis
+  processedAt?: string;
+}
 
 // Core domain types
 export interface Ticket {
   id: string;
-  userMessage: string;
+  content: string;
   status: TicketStatus;
-  priorityLevel: 'low' | 'medium' | 'high';
+  priority?: 'low' | 'medium' | 'high';
   
   // Processing results
-  analyzerResult?: {
-    category?: string;
-    confidence?: number;
-  };
-  generatedResponse?: string;
+  analysis?: any;
+  suggestion?: string;
   finalContent?: string | null;
   
   // Safety evaluation
@@ -35,11 +114,11 @@ export interface Ticket {
   approvalStatus?: ApprovalStatus;
   approvedBy?: string;
   approvedAt?: string;
+  edits?: string;
   
   // Metadata
   createdAt: string;
   updatedAt: string;
-  tags?: string[];
 }
 
 export interface TicketLog {
@@ -85,9 +164,8 @@ export interface TicketDetail {
 }
 
 export interface CreateTicketRequest {
-  userMessage: string;
-  priorityLevel?: 'low' | 'medium' | 'high';
-  tags?: string[];
+  content: string;
+  priority?: 'low' | 'medium' | 'high';
 }
 
 export interface ApproveTicketRequest {

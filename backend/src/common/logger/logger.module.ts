@@ -21,7 +21,13 @@ import { WinstonLogRepository } from './winston-log-repository';
 
 @Global()
 @Module({
-  providers: [StructuredLogger, WinstonLogRepository],
+  providers: [
+    {
+      provide: StructuredLogger,
+      useFactory: () => new StructuredLogger(),
+    },
+    WinstonLogRepository,
+  ],
   exports: [StructuredLogger, WinstonLogRepository],
 })
 export class LoggerModule {}

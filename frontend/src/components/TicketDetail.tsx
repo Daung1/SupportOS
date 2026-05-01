@@ -104,7 +104,7 @@ export const TicketDetail: React.FC<TicketDetailProps> = ({
 
         {/* Message */}
         <div className="bg-gray-50 p-4 rounded-lg">
-          <p className="text-gray-700">{ticket.userMessage}</p>
+          <p className="text-gray-700">{ticket.content}</p>
         </div>
 
         {/* Progress */}
@@ -151,7 +151,7 @@ export const TicketDetail: React.FC<TicketDetailProps> = ({
           <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
             <div className="lg:col-span-2">
               <AIResponse
-                response={ticket.generatedResponse}
+                response={ticket.suggestion}
                 finalContent={ticket.finalContent}
                 category={ticket.approvalStatus}
                 isLoading={
@@ -178,7 +178,7 @@ export const TicketDetail: React.FC<TicketDetailProps> = ({
           <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
             <div className="lg:col-span-2">
               <AIResponse
-                response={ticket.generatedResponse}
+                response={ticket.suggestion}
                 finalContent={ticket.finalContent}
                 category={ticket.approvalStatus}
               />
@@ -205,7 +205,7 @@ export const TicketDetail: React.FC<TicketDetailProps> = ({
             <div className="lg:col-span-2">
               <ApprovalPanel
                 ticketId={ticketId}
-                currentContent={ticket.finalContent ?? ticket.generatedResponse}
+                currentContent={ticket.finalContent ?? ticket.suggestion}
                 requiresReview={ticket.requiresReview}
                 approvalStatus={ticket.approvalStatus}
                 onApprovalStatusChange={handleRefresh}

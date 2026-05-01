@@ -3,7 +3,7 @@
  * Manages all providers and exports for cascade levels 1-3.
  */
 
-import { Module } from '@nestjs/common';
+import { Module, forwardRef } from '@nestjs/common';
 import { AgentsModule } from '../agents/agents.module';
 import { FAQMatcher } from './faq.matcher';
 import { SimpleFilter } from './simple.filter';
@@ -49,7 +49,7 @@ const providers = [
   // AgentsModule exposes MultiAgentOrchestrator which is required for
   // L3 fallback.  Importing the module instead of re-providing keeps
   // the pipeline/provider/orchestrator wiring in a single place.
-  imports: [AgentsModule],
+  imports: [forwardRef(() => AgentsModule)],
   providers: [...providers],
   exports: [...providers],
 })

@@ -13,32 +13,31 @@ export const TicketInput: React.FC<TicketInputProps> = ({
 }) => {
   const [message, setMessage] = useState('');
   const [priority, setPriority] = useState<'low' | 'medium' | 'high'>('medium');
-  const [tags, setTags] = useState('');
   const { createTicket, isLoading, error } = useCreateTicket();
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
+    console.log('Form submitted! Message:', message);
 
     if (!message.trim()) {
+      console.log('Message is empty');
       onError?.('Please enter a message');
       return;
     }
 
     try {
+      console.log('Creating ticket with:', { content: message, priority });
       const req: CreateTicketRequest = {
-        userMessage: message,
-        priorityLevel: priority,
-        tags: tags
-          .split(',')
-          .map((t) => t.trim())
-          .filter((t) => t),
+        content: message,
+        priority: priority,
       };
 
       const ticket = await createTicket(req);
+      console.log('Ticket created:', ticket);
       setMessage('');
-      setTags('');
       onTicketCreated?.(ticket.id);
     } catch (err) {
+      console.error('Error creating ticket:', err);
       const errorMsg = err instanceof Error ? err.message : 'Failed to create ticket';
       onError?.(errorMsg);
     }
@@ -53,10 +52,12 @@ export const TicketInput: React.FC<TicketInputProps> = ({
       <form onSubmit={handleSubmit} className="space-y-4">
         {/* Message */}
         <div>
-          <label className="block text-sm font-medium text-gray-700 mb-2">
+          <label htmlFor="message" className="block text-sm font-medium text-gray-700 mb-2">
             Message
           </label>
           <textarea
+            id="message"
+            name="message"
             value={message}
             onChange={(e) => setMessage(e.target.value)}
             placeholder="Describe your issue..."
@@ -68,10 +69,12 @@ export const TicketInput: React.FC<TicketInputProps> = ({
 
         {/* Priority */}
         <div>
-          <label className="block text-sm font-medium text-gray-700 mb-2">
+          <label htmlFor="priority" className="block text-sm font-medium text-gray-700 mb-2">
             Priority
           </label>
           <select
+            id="priority"
+            name="priority"
             value={priority}
             onChange={(e) => setPriority(e.target.value as any)}
             className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent"
@@ -81,21 +84,6 @@ export const TicketInput: React.FC<TicketInputProps> = ({
             <option value="medium">Medium</option>
             <option value="high">High</option>
           </select>
-        </div>
-
-        {/* Tags */}
-        <div>
-          <label className="block text-sm font-medium text-gray-700 mb-2">
-            Tags (comma-separated)
-          </label>
-          <input
-            type="text"
-            value={tags}
-            onChange={(e) => setTags(e.target.value)}
-            placeholder="bug, feature, urgent..."
-            className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent"
-            disabled={isLoading}
-          />
         </div>
 
         {/* Error */}

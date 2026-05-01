@@ -200,7 +200,18 @@ export class TicketService {
     cascade: CascadeResult,
     result: ConcurrentTaskResult,
   ): Record<string, unknown> {
+    const generator = cascade.pipelineResult?.generatorOutput as
+      | Record<string, unknown>
+      | undefined;
+    const analyzer = cascade.pipelineResult?.routes.find(
+      (route) => route.routeId === 'analyzer',
+    )?.output;
+    const classification = this.buildDisplayClassification(cascade, generator);
+
     const base: Record<string, unknown> = {
+      type: this.resolveDisplayType(cascade, generator),
+      confidence: cascade.confidence,
+      classification,
       cascadeLevel: cascade.level,
       source: cascade.source,
       category: cascade.category,
@@ -209,6 +220,15 @@ export class TicketService {
       taskId: result.taskId,
       wallClockMs: result.durationMs,
     };
+
+    if (generator) {
+      base.generator = generator;
+      Object.assign(base, this.pickGeneratorDisplayFields(generator));
+    }
+
+    if (analyzer) {
+      base.analyzer = analyzer;
+    }
 
     if (cascade.pipelineResult) {
       base.pipelineId = cascade.pipelineResult.pipelineId;
@@ -220,6 +240,66 @@ export class TicketService {
     }
 
     return base;
+  }
+
+  private buildDisplayClassification(
+    cascade: CascadeResult,
+    generator?: Record<string, unknown>,
+  ): Record<string, unknown> {
+    const generatorClassification = generator?.classification;
+    if (
+      generatorClassification &&
+      typeof generatorClassification === 'object'
+    ) {
+      return generatorClassification as Record<string, unknown>;
+    }
+
+    const type = this.resolveDisplayType(cascade, generator);
+    return {
+      type,
+      confidence: cascade.confidence,
+      reason: `Processed by ${cascade.source} at cascade level ${cascade.level}`,
+      matchedKeywords: cascade.matchedKeywords ?? [],
+    };
+  }
+
+  private resolveDisplayType(
+    cascade: CascadeResult,
+    generator?: Record<string, unknown>,
+  ): string {
+    if (typeof generator?.type === 'string') {
+      return generator.type;
+    }
+    if (cascade.source === 'FAQMatcher') {
+      return 'FAQ';
+    }
+    if (cascade.source === 'MultiAgent') {
+      return 'OTHER';
+    }
+    return 'OTHER';
+  }
+
+  private pickGeneratorDisplayFields(
+    generator: Record<string, unknown>,
+  ): Record<string, unknown> {
+    const keys = [
+      'answer',
+      'draftContent',
+      'suggestion',
+      'searchResults',
+      'bugReport',
+      'customerEmail',
+      'nextSteps',
+      'editable',
+      'chatOptimizable',
+    ];
+
+    return keys.reduce<Record<string, unknown>>((acc, key) => {
+      if (generator[key] !== undefined) {
+        acc[key] = generator[key];
+      }
+      return acc;
+    }, {});
   }
 
   /**

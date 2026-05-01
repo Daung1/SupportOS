@@ -274,17 +274,35 @@ export class CascadeOrchestrator {
     startedAt: number,
   ): CascadeResult {
     const generator = pipeline.generatorOutput as
-      | { content?: string; category?: string; confidence?: number }
+      | {
+          answer?: string;
+          content?: string;
+          draftContent?: string;
+          suggestion?: string;
+          category?: string;
+          confidence?: number;
+          classification?: { type?: string };
+          type?: string;
+        }
       | undefined;
 
     const answer =
-      typeof generator?.content === 'string' ? generator.content : '';
+      this.firstString(
+        generator?.content,
+        generator?.answer,
+        generator?.draftContent,
+        generator?.suggestion,
+      ) ?? '';
 
     return {
       level: 3,
       source: 'MultiAgent',
       success: pipeline.success,
-      category: generator?.category ?? 'general',
+      category:
+        generator?.category ??
+        generator?.classification?.type ??
+        generator?.type ??
+        'general',
       answer,
       confidence: generator?.confidence ?? 0,
       processingTimeMs: Date.now() - startedAt,
@@ -292,6 +310,10 @@ export class CascadeOrchestrator {
       pipelineResult: pipeline,
       safetyDecision: pipeline.safetyDecision,
     };
+  }
+
+  private firstString(...values: unknown[]): string | undefined {
+    return values.find((value): value is string => typeof value === 'string');
   }
 
   private level2TemplateAnswer(filter: SimpleFilterResult): string {

@@ -23,9 +23,11 @@ export const TicketList: React.FC<TicketListProps> = ({ onSelectTicket }) => {
   const statusColors: Record<TicketStatus, string> = {
     pending: 'bg-yellow-100 text-yellow-800',
     processing: 'bg-blue-100 text-blue-800',
+    waiting_approval: 'bg-purple-100 text-purple-800',
     completed: 'bg-green-100 text-green-800',
     failed: 'bg-red-100 text-red-800',
     review: 'bg-purple-100 text-purple-800',
+    dlq: 'bg-gray-100 text-gray-800',
   };
 
   const priorityColors: Record<string, string> = {
@@ -51,9 +53,11 @@ export const TicketList: React.FC<TicketListProps> = ({ onSelectTicket }) => {
           <option value="">All Statuses</option>
           <option value="pending">Pending</option>
           <option value="processing">Processing</option>
+          <option value="waiting_approval">Waiting Approval</option>
           <option value="completed">Completed</option>
           <option value="failed">Failed</option>
           <option value="review">Review</option>
+          <option value="dlq">Dead Letter Queue</option>
         </select>
         <span className="text-sm text-gray-600">
           {total} total tickets
@@ -90,15 +94,15 @@ export const TicketList: React.FC<TicketListProps> = ({ onSelectTicket }) => {
                     </span>
                   </div>
                   <p className="text-gray-600 text-sm line-clamp-2">
-                    {ticket.userMessage}
+                    {ticket.content}
                   </p>
                   <div className="mt-2 flex gap-2 items-center text-xs text-gray-500">
                     <span>
                       Created: {new Date(ticket.createdAt).toLocaleString()}
                     </span>
-                    {ticket.priorityLevel && (
-                      <span className={priorityColors[ticket.priorityLevel]}>
-                        {ticket.priorityLevel.toUpperCase()}
+                    {ticket.priority && (
+                      <span className={priorityColors[ticket.priority]}>
+                        {ticket.priority.toUpperCase()}
                       </span>
                     )}
                     {ticket.confidence !== undefined && (

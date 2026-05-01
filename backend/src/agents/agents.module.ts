@@ -3,7 +3,7 @@
  * NestJS module that provides agent framework exports and configuration
  */
 
-import { Module } from '@nestjs/common';
+import { Module, forwardRef } from '@nestjs/common';
 import { GeminiModule } from '../gemini/gemini.module';
 import { ToolsModule } from '../tools/tools.module';
 import { ClassifierModule } from '../classifier/classifier.module';
@@ -38,7 +38,7 @@ import {
     ToolsModule,
     ClassifierModule,
     GeneratorSupportModule,
-    CascadeModule,
+    forwardRef(() => CascadeModule),
     TokensModule,
     SafetyModule,
   ],

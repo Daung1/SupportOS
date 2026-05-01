@@ -7,3 +7,6 @@ export { SafetyIndicator } from './SafetyIndicator';
 export { TokenCost } from './TokenCost';
 export { ApprovalPanel } from './ApprovalPanel';
 export { LogViewer } from './LogViewer';
+export { ChatBox } from './ChatBox';
+export { TicketAnalysisCard } from './TicketAnalysisCard';
+export { SupporterDashboard } from './SupporterDashboard';

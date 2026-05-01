@@ -1,6 +1,8 @@
+/// <reference types="vite/client" />
+
 import useSWR from 'swr';
 import useSWRMutation from 'swr/mutation';
-import { api } from '../lib/api';
+import { api, normalizeTicketDetail, normalizeTicketList } from '../lib/api';
 import {
   Ticket,
   TicketDetail,
@@ -14,13 +16,27 @@ import {
 } from '../types';
 
 // Fetcher for SWR
-const fetcher = (url: string) => fetch(url).then((res) => res.json());
+const API_BASE = import.meta.env.VITE_API_URL || 'http://localhost:3000/api';
+
+const fetcher = (url: string) => {
+  const fullUrl = url.startsWith('http') ? url : `${API_BASE}${url}`;
+  console.log('[SWR Fetcher] Fetching:', fullUrl);
+  return fetch(fullUrl)
+    .then((res) => {
+      console.log('[SWR Fetcher] Response status:', res.status);
+      return res.json();
+    })
+    .catch((err) => {
+      console.error('[SWR Fetcher] Error:', err);
+      throw err;
+    });
+};
 
 // Use single ticket
 export const useTicket = (ticketId: string | null, shouldFetch = true) => {
-  const { data, error, isLoading, mutate } = useSWR<TicketDetail>(
-    shouldFetch && ticketId ? `/api/tickets/${ticketId}` : null,
-    fetcher,
+  const { data, error, isLoading, mutate } = useSWR(
+    shouldFetch && ticketId ? `/tickets/${ticketId}` : null,
+    async (url: string) => normalizeTicketDetail(await fetcher(url)),
     {
       revalidateOnFocus: false,
       dedupingInterval: 2000,
@@ -57,11 +73,12 @@ export const useTickets = (
   }
 
   const { data, error, isLoading, mutate } = useSWR<PaginatedResponse<Ticket>>(
-    shouldFetch ? `/api/tickets?${query}` : null,
-    fetcher,
+    shouldFetch ? `/tickets?${query}` : null,
+    async (url: string) => normalizeTicketList(await fetcher(url)),
     {
       revalidateOnFocus: false,
       dedupingInterval: 3000,
+      refreshInterval: shouldFetch ? 3000 : 0,
     },
   );
 
@@ -79,7 +96,7 @@ export const useTickets = (
 // Create ticket mutation
 export const useCreateTicket = () => {
   const { trigger, isMutating, error } = useSWRMutation(
-    '/api/tickets',
+    '/tickets',
     async (_key: string, { arg }: { arg: CreateTicketRequest }) => {
       return api.createTicket(arg);
     },
@@ -143,7 +160,7 @@ export const useChatWithAI = () => {
 // Fetch logs
 export const useTicketLogs = (ticketId: string | null) => {
   const { data, error, isLoading, mutate } = useSWR<TicketLog[]>(
-    ticketId ? `/api/tickets/${ticketId}/logs` : null,
+    ticketId ? `/tickets/${ticketId}/logs` : null,
     fetcher,
     {
       revalidateOnFocus: false,
@@ -161,7 +178,7 @@ export const useTicketLogs = (ticketId: string | null) => {
 // Fetch token usage
 export const useTokenUsage = (ticketId: string | null) => {
   const { data, error, isLoading, mutate } = useSWR<TokenUsage[]>(
-    ticketId ? `/api/tickets/${ticketId}/token-usage` : null,
+    ticketId ? `/tickets/${ticketId}/token-usage` : null,
     fetcher,
     {
       revalidateOnFocus: false,

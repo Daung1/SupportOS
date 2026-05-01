@@ -15,10 +15,10 @@ export default defineConfig({
     server: {
         port: 5173,
         proxy: {
-            '/api': {
+            // 使用完整匹配模式，防止 Vite 删除前缀
+            '^/api': {
                 target: 'http://localhost:3000',
                 changeOrigin: true,
-                rewrite: function (path) { return path.replace(/^\/api/, ''); },
             },
         },
     },
