@@ -144,6 +144,25 @@ model FAQEmbedding {
   @@index([model])
 }
 
+// DocumentEmbedding stores per-Document vector embeddings used by the
+// L3 SearcherAgent (via SearchTool). docId is Document.id. Mirrors
+// FAQEmbedding so the SearchTool can do real semantic retrieval against
+// the KB instead of the previous local hash pseudo-embedding.
+//
+// `contentHash` is a digest of (title + content) we embedded, so we can
+// detect content drift and re-embed only the rows that changed.
+// `model` lets us re-embed every row when we swap embedding models.
+model DocumentEmbedding {
+  docId       String   @id
+  vector      String   @db.Text // JSON-serialized number[] (768 dims)
+  contentHash String
+  model       String
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  @@index([model])
+}
+
 // ApprovalTask human approval task
 model ApprovalTask {
   id          String   @id @default(cuid())

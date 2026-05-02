@@ -1,144 +1,150 @@
-import { Injectable } from '@nestjs/common';
-import { PrismaService } from '../database/prisma.service';
+/**
+ * SearchTool — vector retrieval over the KB Document corpus.
+ *
+ * Used exclusively by SearcherAgent. The tool is intentionally thin:
+ * embed the query once via Gemini, cosine against the in-memory
+ * cache populated by DocumentEmbeddingService at boot, return top-K.
+ *
+ * Why no DB read on the hot path:
+ *   - DocumentEmbeddingService already loaded every Document and its
+ *     vector into memory at OnModuleInit. Re-reading them per query
+ *     would just thrash the DB pool to no benefit.
+ *   - The cache parses the JSON-serialised vectors once. Doing it per
+ *     query (as the previous implementation did) was the dominant
+ *     cost on hits with large KBs.
+ *
+ * Failure modes:
+ *   - Embedding service not ready (boot still racing, or first-time
+ *     embedding failed): return success=false with empty results.
+ *     The caller (SearcherAgent) will surface this as a TAO
+ *     observation; the orchestrator's Searcher route is marked
+ *     failurePolicy='continue' so the pipeline still flows on to
+ *     Generator + Scenario C / D.
+ *   - Query embedding throws (Gemini 503, network): same shape -
+ *     the agent handles it as a tool error rather than crashing.
+ */
+
+import { Injectable, Logger } from '@nestjs/common';
 import { ITool } from '../agents/core/execution-context.interface';
+import { GeminiService } from '../gemini/gemini.service';
+import {
+  DocumentEmbeddingService,
+  cosine,
+} from './document-embedding.service';
+
+interface SearchToolInput {
+  query: string;
+  topK?: number;
+  /** Override the relevance floor for this call. Defaults to 0.55. */
+  threshold?: number;
+}
+
+interface SearchToolHit {
+  id: string;
+  title: string;
+  content: string;
+  source: string | null;
+  score: number;
+}
+
+interface SearchToolResult {
+  success: boolean;
+  query: string;
+  results: SearchToolHit[];
+  count: number;
+  error?: string;
+}
+
+/**
+ * Cosine cutoff below which we drop a hit even if it lands in the
+ * top-K. Tuned for `gemini-embedding-001` (768d, non-unit vectors,
+ * see FAQMatcher decisions). 0.55 keeps recall high enough that
+ * Searcher's TAO loop sees signal on most well-scoped queries while
+ * still rejecting the noisy "everything weakly correlates" tail.
+ */
+const DEFAULT_RELEVANCE_THRESHOLD = 0.55;
 
 @Injectable()
 export class SearchTool implements ITool {
   name = 'search';
-  description = 'Search knowledge base documents using vector embeddings';
+  description =
+    'Search knowledge base documents using semantic vector similarity (Gemini embeddings)';
 
-  constructor(private prisma: PrismaService) {}
+  private readonly logger = new Logger(SearchTool.name);
 
-  async execute(input: { query: string; topK?: number }): Promise<any> {
-    const { query, topK = 5 } = input;
+  constructor(
+    private readonly gemini: GeminiService,
+    private readonly embeddings: DocumentEmbeddingService,
+  ) {}
 
-    if (!query || query.trim().length === 0) {
+  async execute(input: SearchToolInput): Promise<SearchToolResult> {
+    const query = (input.query ?? '').trim();
+    const topK = input.topK ?? 5;
+    const threshold = input.threshold ?? DEFAULT_RELEVANCE_THRESHOLD;
+
+    if (query.length === 0) {
       return {
         success: false,
-        error: 'Query cannot be empty',
-        results: [],
-      };
-    }
-
-    try {
-      // Generate pseudo-embedding for query (no API call needed)
-      const queryEmbedding = this.generatePseudoEmbedding(query);
-
-      // Get all documents with embeddings
-      const documents = await this.prisma.document.findMany({
-        select: {
-          id: true,
-          title: true,
-          content: true,
-          source: true,
-          embedding: true,
-        },
-      });
-
-      // Filter documents that have embeddings
-      const docsWithEmbeddings = documents.filter(
-        (doc) => doc.embedding !== null,
-      );
-
-      if (docsWithEmbeddings.length === 0) {
-        return {
-          success: false,
-          error: 'No documents with embeddings found',
-          results: [],
-        };
-      }
-
-      // Calculate cosine similarity for each document
-      const scoredDocs = docsWithEmbeddings.map((doc) => {
-        const docEmbedding = JSON.parse(doc.embedding!);
-        const score = this.cosineSimilarity(queryEmbedding, docEmbedding);
-        return {
-          ...doc,
-          score,
-        };
-      });
-
-      // Sort and filter by score threshold (0.5 for vector similarity)
-      const sorted = scoredDocs
-        .sort((a, b) => b.score - a.score)
-        .slice(0, topK);
-
-      const relevant = sorted.filter((doc) => doc.score > 0.1); // Lowered threshold for pseudo-embeddings
-
-      return {
-        success: true,
         query,
-        results: relevant.map((doc) => ({
-          id: doc.id,
-          title: doc.title,
-          content: doc.content.substring(0, 500),
-          source: doc.source,
-          score: parseFloat(doc.score.toFixed(4)),
-        })),
-        count: relevant.length,
+        results: [],
+        count: 0,
+        error: 'Query cannot be empty',
       };
-    } catch (error) {
+    }
+
+    if (!this.embeddings.isReady()) {
+      this.logger.warn(
+        'SearchTool called before DocumentEmbeddingService finished bootstrapping; returning empty results.',
+      );
       return {
         success: false,
-        error: `Search failed: ${error instanceof Error ? error.message : String(error)}`,
+        query,
         results: [],
+        count: 0,
+        error: 'Document embeddings not ready',
       };
     }
-  }
 
-  private generatePseudoEmbedding(text: string): number[] {
-    const words = text
-      .toLowerCase()
-      .split(/\s+/)
-      .filter((w) => w.length > 0);
-
-    // Stop words to filter
-    const stopWords = new Set([
-      'the', 'a', 'an', 'and', 'or', 'but', 'is', 'are', 'was', 'were',
-      'be', 'been', 'being', 'have', 'has', 'had', 'do', 'does', 'did',
-      'will', 'would', 'should', 'could', 'can', 'may', 'might', 'must',
-      'in', 'on', 'at', 'to', 'for', 'of', 'with', 'by', 'from',
-    ]);
-
-    const contentWords = words.filter((w) => !stopWords.has(w));
-
-    // Create a fixed-size vector (384 dims like text-embedding-004)
-    const vector: number[] = new Array(384).fill(0);
-
-    // Simple hash-based distribution
-    for (const word of contentWords) {
-      let hash = 0;
-      for (let i = 0; i < word.length; i++) {
-        const char = word.charCodeAt(i);
-        hash = (hash << 5) - hash + char;
-        hash = hash & hash; // Convert to 32bit integer
-      }
-      const idx = Math.abs(hash) % 384;
-      vector[idx] += 1 / Math.max(contentWords.length, 1);
+    let queryVec: number[];
+    try {
+      queryVec = await this.gemini.embed(query, 'RETRIEVAL_QUERY');
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      this.logger.warn(`Query embedding failed: ${message}`);
+      return {
+        success: false,
+        query,
+        results: [],
+        count: 0,
+        error: `Failed to embed query: ${message}`,
+      };
     }
 
-    // Normalize vector
-    const magnitude = Math.sqrt(vector.reduce((sum, v) => sum + v * v, 0));
-    if (magnitude > 0) {
-      return vector.map((v) => v / magnitude);
-    }
-    return vector;
-  }
+    const corpus = this.embeddings.getEmbeddings();
+    const scored = corpus.map(({ doc, vector }) => ({
+      doc,
+      score: cosine(queryVec, vector),
+    }));
 
-  private cosineSimilarity(vecA: number[], vecB: number[]): number {
-    if (vecA.length !== vecB.length) {
-      console.warn('Vector dimensions do not match');
-      return 0;
-    }
+    const ranked = scored
+      .sort((a, b) => b.score - a.score)
+      .slice(0, topK)
+      .filter((s) => s.score >= threshold);
 
-    const dotProduct = vecA.reduce((sum, a, i) => sum + a * vecB[i], 0);
-    const magnitudeA = Math.sqrt(vecA.reduce((sum, a) => sum + a * a, 0));
-    const magnitudeB = Math.sqrt(vecB.reduce((sum, b) => sum + b * b, 0));
-
-    if (magnitudeA === 0 || magnitudeB === 0) {
-      return 0;
-    }
-
-    return dotProduct / (magnitudeA * magnitudeB);
+    return {
+      success: true,
+      query,
+      results: ranked.map(({ doc, score }) => ({
+        id: doc.id,
+        title: doc.title,
+        // Preserve the previous tool contract: callers expect a
+        // bounded preview rather than the full content. Keeps prompt
+        // sizes predictable when Searcher feeds these into Gemini.
+        content: doc.content.slice(0, 500),
+        source: doc.source,
+        score: parseFloat(score.toFixed(4)),
+      })),
+      count: ranked.length,
+    };
   }
 }
