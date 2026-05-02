@@ -1,299 +1,195 @@
 /// <reference types="jest" />
 
 /**
- * FAQMatcher Unit Tests
- * Test Level 1 FAQ matching logic
- * Target: 60% of tickets with high confidence (>= 0.9)
- * Performance: < 10ms per match
+ * FAQMatcher (vector edition) unit tests.
+ *
+ * The new matcher delegates embedding to GeminiService and the corpus
+ * cache to FAQEmbeddingService - both are stubbed here so the test
+ * stays hermetic and deterministic. We synthesize tiny 4-dim vectors
+ * to keep the cosine math easy to reason about.
  */
 
-import { FAQMatcher, FAQMatchResult } from './faq.matcher';
-import { FAQ_DATABASE } from './faq.data';
+import { FAQMatcher } from './faq.matcher';
+import { FAQEmbeddingService } from './faq-embedding.service';
+import { GeminiService } from '../gemini/gemini.service';
+import { FAQ } from './faq.data';
 
-describe('FAQMatcher - Level 1 Matcher', () => {
+const FAQ_FIXTURES: FAQ[] = [
+  {
+    id: 'billing_003',
+    question: 'How do refunds work?',
+    answer: 'Refunds processed within 5-7 business days.',
+    keywords: ['refund', 'money back', 'return'],
+    category: 'billing',
+    frequency: 89,
+  },
+  {
+    id: 'shipping_001',
+    question: 'How long does standard shipping take?',
+    answer: 'Standard shipping typically takes 5-7 business days.',
+    keywords: ['shipping', 'delivery', 'time'],
+    category: 'shipping',
+    frequency: 95,
+  },
+  {
+    id: 'account_002',
+    question: 'How do I reset my password?',
+    answer: 'Click "Forgot Password" on login page.',
+    keywords: ['password', 'reset'],
+    category: 'account',
+    frequency: 94,
+  },
+];
+
+const FAQ_VECTORS: Record<string, number[]> = {
+  billing_003: [1, 0, 0, 0],
+  shipping_001: [0, 1, 0, 0],
+  account_002: [0, 0, 1, 0],
+};
+
+function makeFakeEmbeddingService(): FAQEmbeddingService {
+  return {
+    isReady: () => true,
+    getEmbeddings: () =>
+      FAQ_FIXTURES.map((faq) => ({ faq, vector: FAQ_VECTORS[faq.id] })),
+  } as unknown as FAQEmbeddingService;
+}
+
+function makeFakeGemini(queryVectorMap: Record<string, number[]>): GeminiService {
+  return {
+    embed: jest.fn(async (text: string) => {
+      const v = queryVectorMap[text];
+      if (!v) throw new Error(`unmocked query: "${text}"`);
+      return v;
+    }),
+  } as unknown as GeminiService;
+}
+
+describe('FAQMatcher (vector)', () => {
   let matcher: FAQMatcher;
+  let gemini: GeminiService;
+  let embeddings: FAQEmbeddingService;
 
   beforeEach(() => {
-    // Initialize with default FAQ database and threshold
-    matcher = new FAQMatcher(FAQ_DATABASE, 0.75);
+    embeddings = makeFakeEmbeddingService();
   });
 
-  describe('Match Method', () => {
-    test('should match identical FAQ question', async () => {
-      const faqQuestion = FAQ_DATABASE[0].question;
-      const result = await matcher.match(faqQuestion);
-
-      expect(result.matched).toBe(true);
-      expect(result.confidence).toBeGreaterThanOrEqual(0.75);
-      expect(result.answer).toBeDefined();
-      expect(result.faqId).toBe(FAQ_DATABASE[0].id);
+  it('returns a hit when top-1 cosine and margin both pass thresholds', async () => {
+    // Unit query close to billing axis -> cos_billing ≈ 0.99.
+    gemini = makeFakeGemini({
+      'how to refund?': [0.99, 0.141, 0, 0],
     });
+    matcher = new FAQMatcher(gemini, embeddings);
 
-    test('should match FAQ with similar content', async () => {
-      const testTicket = 'How long does shipping take?';
-      const result = await matcher.match(testTicket);
+    const result = await matcher.match('how to refund?');
 
-      expect(result.matched).toBe(true);
-      expect(result.confidence).toBeGreaterThanOrEqual(0.75);
-      expect(result.answer).toBeDefined();
-      // Relaxed: the matched FAQ answer should mention shipping or
-      // delivery somewhere in its body (the previous "first word"
-      // assertion was too strict - the canonical shipping FAQ answer
-      // starts with "Standard shipping...").
-      expect(result.answer?.toLowerCase()).toMatch(/shipping|delivery/);
-    });
-
-    test('should not match with low confidence', async () => {
-      const testTicket = 'The color of the sky is blue';
-      const result = await matcher.match(testTicket);
-
-      expect(result.matched).toBe(false);
-      expect(result.confidence).toBeLessThan(0.75);
-    });
-
-    test('should handle empty input', async () => {
-      const result = await matcher.match('');
-
-      expect(result.matched).toBe(false);
-      expect(result.confidence).toBe(0);
-      expect(result.reason).toBe('Ticket text is empty');
-    });
-
-    test('should handle whitespace only input', async () => {
-      const result = await matcher.match('   ');
-
-      expect(result.matched).toBe(false);
-      expect(result.confidence).toBe(0);
-    });
-
-    test('should match shipping question correctly', async () => {
-      const testTicket = 'What is the cost of shipping my order?';
-      const result = await matcher.match(testTicket);
-
-      expect(result.matched).toBe(true);
-      expect(result.faqId).toMatch(/shipping_\d+/);
-      expect(result.processingTime).toBeLessThan(50);
-    });
-
-    test('should match billing question correctly', async () => {
-      const testTicket = 'Why was I charged twice for my purchase?';
-      const result = await matcher.match(testTicket);
-
-      expect(result.matched).toBe(true);
-      expect(result.faqId).toMatch(/billing_\d+/);
-    });
-
-    test('should match product question correctly', async () => {
-      const testTicket = 'What materials are used in this product?';
-      const result = await matcher.match(testTicket);
-
-      expect(result.matched).toBe(true);
-      expect(result.faqId).toMatch(/product_\d+/);
-    });
-
-    test('should match account question correctly', async () => {
-      const testTicket = 'How do I reset my password?';
-      const result = await matcher.match(testTicket);
-
-      expect(result.matched).toBe(true);
-      expect(result.faqId).toMatch(/account_\d+/);
-    });
-
-    test('should match policy question correctly', async () => {
-      const testTicket = 'What is your return policy?';
-      const result = await matcher.match(testTicket);
-
-      expect(result.matched).toBe(true);
-      expect(result.faqId).toMatch(/policy_\d+/);
-    });
-
-    test('should have reason for match', async () => {
-      const result = await matcher.match('How long does standard shipping take?');
-
-      expect(result.reason).toBeDefined();
-      expect(result.reason).toContain('Matched FAQ');
-    });
-
-    test('should have reason for no match', async () => {
-      const result = await matcher.match('Random unrelated text');
-
-      expect(result.reason).toBeDefined();
-      expect(result.reason).toContain('threshold');
-    });
-
-    test('should track processing time', async () => {
-      const result = await matcher.match('How do I track my order?');
-
-      expect(result.processingTime).toBeDefined();
-      expect(result.processingTime).toBeGreaterThan(0);
-      expect(result.processingTime).toBeLessThan(100);
-    });
-
-    test('should handle very long ticket text', async () => {
-      const longText = 'I have a question about my order. ' + 'shipping status update '.repeat(20);
-      const result = await matcher.match(longText);
-
-      expect(result.matched).toBeDefined();
-      expect(result.confidence).toBeGreaterThanOrEqual(0);
-      expect(result.processingTime).toBeLessThan(100);
-    });
+    expect(result.matched).toBe(true);
+    expect(result.faqId).toBe('billing_003');
+    expect(result.category).toBe('billing');
+    expect(result.confidence).toBeGreaterThan(0.9);
+    expect(result.margin).toBeGreaterThan(0);
   });
 
-  describe('Confidence Threshold', () => {
-    test('should respect custom confidence threshold', async () => {
-      const strictMatcher = new FAQMatcher(FAQ_DATABASE, 0.95);
-      const result = await strictMatcher.match('How long does shipping take?');
-
-      // With higher threshold, may not match
-      expect(result.matched).toBe(false);
-      expect(result.confidence).toBeLessThan(0.95);
+  it('returns no-match when absolute score below threshold', async () => {
+    // Unit query distributed across all axes - cosines all 0.5.
+    gemini = makeFakeGemini({
+      vague: [0.5, 0.5, 0.5, 0.5],
     });
+    matcher = new FAQMatcher(gemini, embeddings);
 
-    test('should match more easily with lower threshold', async () => {
-      // Threshold lowered from 0.5 to 0.25: a 2-token query against
-      // a 6-token FAQ question can never reach 0.5 under any of
-      // (cosine | jaccard | keyword-score) without overfitting the
-      // formula.  0.25 is well above pure noise (~0.05 tokenOverlap
-      // for unrelated text) and validates the "lower threshold ->
-      // more matches" intent of the test.
-      const relaxedMatcher = new FAQMatcher(FAQ_DATABASE, 0.25);
-      const result = await relaxedMatcher.match('shipping delivery');
+    const result = await matcher.match('vague');
 
-      expect(result.matched).toBe(true);
-    });
-
-    test('should use default threshold of 0.9', async () => {
-      const defaultMatcher = new FAQMatcher(FAQ_DATABASE);
-      const result = await defaultMatcher.match('How long does shipping take?');
-
-      expect(result.matched).toBeDefined();
-    });
+    expect(result.matched).toBe(false);
+    expect(result.reason).toMatch(/threshold/);
   });
 
-  describe('Database Handling', () => {
-    test('should use custom FAQ database', async () => {
-      const customFAQ: FAQ[] = [
-        {
-          id: 'custom_001',
-          question: 'Custom question about test',
-          answer: 'Custom answer for testing',
-          keywords: ['custom', 'test'],
-          category: 'product',
-          frequency: 50
-        }
-      ];
-
-      const customMatcher = new FAQMatcher(customFAQ, 0.5);
-      const result = await customMatcher.match('Custom question about test');
-
-      expect(result.matched).toBe(true);
-      expect(result.faqId).toBe('custom_001');
+  it('returns no-match when margin too thin (ambiguous)', async () => {
+    // Query roughly equidistant from billing and shipping. With
+    // orthonormal FAQ basis vectors the maximum simultaneously-
+    // achievable abs score for two candidates is bounded by the
+    // unit-norm constraint, so we relax the abs threshold here
+    // and let the margin check do the talking.
+    gemini = makeFakeGemini({
+      ambiguous: [0.71, 0.7, 0, 0],
     });
+    matcher = new FAQMatcher(gemini, embeddings);
+    matcher.setThresholds(0.6, 0.03);
 
-    test('should handle empty FAQ database', async () => {
-      const emptyMatcher = new FAQMatcher([], 0.75);
-      const result = await emptyMatcher.match('Any question');
+    const result = await matcher.match('ambiguous');
 
-      expect(result.matched).toBe(false);
-      // Wording unified to always mention the threshold so log
-      // readers can group L1 misses uniformly.
-      expect(result.reason).toContain('threshold');
-    });
+    expect(result.matched).toBe(false);
+    expect(result.reason).toMatch(/margin|ambiguous/i);
   });
 
-  describe('Edge Cases', () => {
-    test('should handle special characters', async () => {
-      const result = await matcher.match('What is @#$%^&* shipping?');
-
-      expect(result.matched).toBeDefined();
-      expect(result.confidence).toBeGreaterThanOrEqual(0);
+  it('uses category hint to bias toward the right corpus slice', async () => {
+    // Query is fractionally closer to shipping than billing in the
+    // unrestricted ranking, but L0 hinted "billing". The category
+    // filter restricts the candidate set so billing wins cleanly.
+    gemini = makeFakeGemini({
+      'refund please': [0.7, 0.71, 0.05, 0],
     });
+    matcher = new FAQMatcher(gemini, embeddings);
+    matcher.setThresholds(0.6, 0.0);
 
-    test('should handle case insensitivity', async () => {
-      const result1 = await matcher.match('HOW LONG DOES SHIPPING TAKE?');
-      const result2 = await matcher.match('how long does shipping take?');
+    const result = await matcher.match('refund please', 'billing');
 
-      expect(result1.matched).toBe(result2.matched);
-      expect(result1.confidence).toBeCloseTo(result2.confidence, 2);
-    });
-
-    test('should handle duplicate words', async () => {
-      const result = await matcher.match('shipping shipping shipping shipping');
-
-      expect(result.matched).toBeDefined();
-      expect(result.faqId).toMatch(/shipping_\d+/);
-    });
-
-    test('should handle mixed language text', async () => {
-      const result = await matcher.match('shipping 运输 delivery');
-
-      expect(result.matched).toBeDefined();
-      expect(result.confidence).toBeGreaterThanOrEqual(0);
-    });
-
-    test('should not crash on error input', async () => {
-      const result = await matcher.match('\x00\x01\x02');
-
-      expect(result.matched).toBeDefined();
-      expect(result.reason).toBeDefined();
-    });
+    expect(result.matched).toBe(true);
+    expect(result.faqId).toBe('billing_003');
   });
 
-  describe('Performance', () => {
-    test('should complete matching in under 50ms', async () => {
-      const start = Date.now();
-      await matcher.match('How long does shipping take?');
-      const duration = Date.now() - start;
+  it('handles empty input without calling embed', async () => {
+    const embedSpy = jest.fn();
+    gemini = { embed: embedSpy } as unknown as GeminiService;
+    matcher = new FAQMatcher(gemini, embeddings);
 
-      expect(duration).toBeLessThan(50);
-    });
-
-    test('should handle batch matching efficiently', async () => {
-      const tickets = [
-        'How long does shipping take?',
-        'Why was I charged twice?',
-        'What materials are used?',
-        'How do I reset my password?',
-        'What is your return policy?'
-      ];
-
-      const start = Date.now();
-      const results = await Promise.all(
-        tickets.map(ticket => matcher.match(ticket))
-      );
-      const duration = Date.now() - start;
-
-      expect(results).toHaveLength(5);
-      expect(duration).toBeLessThan(500); // Average 100ms per match
-    });
+    const result = await matcher.match('');
+    expect(result.matched).toBe(false);
+    expect(result.reason).toBe('Ticket text is empty');
+    expect(embedSpy).not.toHaveBeenCalled();
   });
 
-  describe('Category Distribution', () => {
-    test('should match various FAQ categories', async () => {
-      const categoryTests = [
-        { text: 'shipping delivery', expected: 'shipping' },
-        { text: 'refund billing', expected: 'billing' },
-        { text: 'product material size', expected: 'product' },
-        { text: 'account password login', expected: 'account' },
-        { text: 'policy return guarantee', expected: 'policy' }
-      ];
+  it('returns graceful no-match when corpus not ready', async () => {
+    const notReady = {
+      isReady: () => false,
+      getEmbeddings: () => [],
+    } as unknown as FAQEmbeddingService;
+    gemini = makeFakeGemini({});
+    matcher = new FAQMatcher(gemini, notReady);
 
-      for (const test of categoryTests) {
-        const result = await matcher.match(test.text);
-        if (result.matched) {
-          expect(result.faqId).toContain(test.expected);
-        }
-      }
+    const result = await matcher.match('any question');
+
+    expect(result.matched).toBe(false);
+    expect(result.reason).toBe('FAQ embeddings not ready');
+  });
+
+  it('returns graceful no-match when embed API throws', async () => {
+    gemini = {
+      embed: jest.fn(async () => {
+        throw new Error('boom');
+      }),
+    } as unknown as GeminiService;
+    matcher = new FAQMatcher(gemini, embeddings);
+
+    const result = await matcher.match('how to refund?');
+
+    expect(result.matched).toBe(false);
+    expect(result.reason).toMatch(/Embedding API failed/);
+  });
+
+  it('respects custom thresholds', async () => {
+    // Unit query [0.78, 0.626, 0, 0] -> cos_billing = 0.78,
+    // cos_shipping = 0.626, margin = 0.154.
+    gemini = makeFakeGemini({
+      borderline: [0.78, 0.626, 0, 0],
     });
+    matcher = new FAQMatcher(gemini, embeddings);
+
+    matcher.setThresholds(0.9, 0.03);
+    const strictResult = await matcher.match('borderline');
+    expect(strictResult.matched).toBe(false);
+
+    matcher.setThresholds(0.5, 0.0);
+    const lenientResult = await matcher.match('borderline');
+    expect(lenientResult.matched).toBe(true);
   });
 });
-
-// Type import for development
-interface FAQ {
-  id: string;
-  question: string;
-  answer: string;
-  keywords: string[];
-  category: 'shipping' | 'billing' | 'product' | 'account' | 'policy' | 'return';
-  frequency: number;
-}

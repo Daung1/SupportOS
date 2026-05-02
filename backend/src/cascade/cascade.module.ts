@@ -1,55 +1,40 @@
 /**
- * Cascade module - NestJS module definition
- * Manages all providers and exports for cascade levels 1-3.
+ * Cascade module - NestJS module definition.
+ *
+ * Wires the L0 (TriageService) -> L1 (FAQMatcher, vector) -> L3
+ * (MultiAgent) pipeline. The legacy L2 SimpleFilter has been removed
+ * because L0 now produces a richer category signal directly from
+ * the LLM router.
+ *
+ * FAQEmbeddingService is a `@Injectable()` with an `onModuleInit`
+ * lifecycle hook - it batch-embeds the FAQ corpus on app boot and
+ * keeps the vectors in memory. It is provided here (rather than via
+ * a useFactory) so Nest manages its lifecycle and DI dependencies
+ * (PrismaService, GeminiService) cleanly.
  */
 
 import { Module, forwardRef } from '@nestjs/common';
 import { AgentsModule } from '../agents/agents.module';
-import { FAQMatcher } from './faq.matcher';
-import { SimpleFilter } from './simple.filter';
+import { DatabaseModule } from '../database/database.module';
+import { GeminiModule } from '../gemini/gemini.module';
 import { CascadeOrchestrator } from './cascade-orchestrator.service';
-import FAQ_DATABASE from './faq.data';
-import FILTER_RULES from './rules.data';
+import { FAQEmbeddingService } from './faq-embedding.service';
+import { FAQMatcher } from './faq.matcher';
+import { TriageService } from './triage.service';
 
 const providers = [
-  {
-    provide: 'FAQ_DATABASE',
-    useValue: FAQ_DATABASE,
-  },
-  {
-    provide: FAQMatcher,
-    useFactory: (faqDatabase: any) => {
-      return new FAQMatcher(faqDatabase, 0.9);
-    },
-    inject: ['FAQ_DATABASE'],
-  },
-  {
-    provide: 'FILTER_RULES',
-    useValue: FILTER_RULES,
-  },
-  {
-    provide: SimpleFilter,
-    useFactory: (filterRules: any) => {
-      // Thresholds re-calibrated for the saturation confidence
-      // formula introduced by TD-1 fix:
-      //   1 keyword  -> 0.33 (below min, escalate to L3)
-      //   2 keywords -> 0.67 (accepted L2 hit)
-      //   3+         -> 1.00 (accepted L2 hit)
-      // Upper bound is 1.0 (was 0.9) because the saturation formula
-      // has no runaway behaviour to cap; previously the upper bound
-      // was a safety net against the divisor-only formula.
-      return new SimpleFilter(filterRules, 0.5, 1.0);
-    },
-    inject: ['FILTER_RULES'],
-  },
+  FAQEmbeddingService,
+  FAQMatcher,
+  TriageService,
   CascadeOrchestrator,
 ];
 
 @Module({
-  // AgentsModule exposes MultiAgentOrchestrator which is required for
-  // L3 fallback.  Importing the module instead of re-providing keeps
-  // the pipeline/provider/orchestrator wiring in a single place.
-  imports: [forwardRef(() => AgentsModule)],
+  imports: [
+    DatabaseModule,
+    GeminiModule,
+    forwardRef(() => AgentsModule),
+  ],
   providers: [...providers],
   exports: [...providers],
 })

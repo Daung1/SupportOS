@@ -1,20 +1,21 @@
 /**
- * Cascade module - exports all classes and utilities for level 1-2 cascade.
+ * Cascade module - exports all classes and utilities for the L0/L1/L3
+ * cascade. (Legacy L2 SimpleFilter has been retired.)
  */
 
 export { FAQMatcher, FAQMatchResult } from './faq.matcher';
 export { FAQ_DATABASE, default as FAQ_DATABASE_DEFAULT } from './faq.data';
 export {
-  calculateSimilarity,
-  chineseTokenize,
-  chineseCharacterSplit,
-  editDistance,
-  normalizeText,
-  extractKeyPhrases,
-  tokenOverlap
-} from './similarity.utils';
-export { SimpleFilter, FilterCategory, SimpleFilterResult } from './simple.filter';
-export { FILTER_RULES, RuleCategory, FilterRuleLibrary } from './rules.data';
+  FAQEmbeddingService,
+  buildFaqEmbedText,
+  cosine,
+} from './faq-embedding.service';
+export {
+  TriageService,
+  TriageResult,
+  TriageIntent,
+  SupportCategory,
+} from './triage.service';
 export {
   CascadeOrchestrator,
   CascadeResult,

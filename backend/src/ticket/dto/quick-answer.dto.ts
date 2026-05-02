@@ -21,15 +21,31 @@ export class QuickAnswerDto {
 }
 
 /**
- * Response for quick answer - either found answer or needs ticket
+ * Response for quick answer.
+ *
+ * Three terminal states the frontend renders differently:
+ *   - matched (level=1):  show `answer` as the FAQ reply.
+ *   - outOfDomain=true:   show `answer` as a friendly OOD message,
+ *                         do NOT offer ticket creation.
+ *   - requiresTicket=true: in-domain but no quick answer; offer
+ *                         "Generate as Ticket" CTA.
+ *
+ * level meaning: 0 = no answer / OOD / requiresTicket, 1 = FAQ match.
+ * (Legacy level 2 SimpleFilter has been retired.)
  */
 export interface QuickAnswerResponse {
   success: boolean;
-  level: 0 | 1 | 2; // 0 = no answer (needs ticket), 1 = FAQ match, 2 = Filter match
-  source: string; // 'FAQMatcher' | 'SimpleFilter' | 'NeedsPending'
+  level: 0 | 1;
+  source: string; // 'FAQMatcher' | 'Triage' | 'Error'
   answer?: string;
   category?: string;
   confidence?: number;
-  requiresTicket: boolean; // true if level === 0
-  message?: string; // User-friendly message when requiresTicket
+  requiresTicket: boolean;
+  outOfDomain: boolean;
+  /** L0 triage intent, null when triage was skipped (error path). */
+  intent: string | null;
+  /** L0 reformulated query (rewrite of the raw input). */
+  reformulated: string | null;
+  message?: string;
+  error?: string;
 }

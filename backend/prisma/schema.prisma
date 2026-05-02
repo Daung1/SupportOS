@@ -127,6 +127,23 @@ model Document {
   @@index([title])
 }
 
+// FAQEmbedding stores per-FAQ vector embeddings used by the L1 vector
+// matcher. The faqId is the stable id from FAQ_DATABASE (e.g. "billing_003").
+// `contentHash` is a digest of the source text we embedded, so we can
+// detect when the FAQ was edited and re-embed only the changed rows on
+// startup. Vector itself is JSON-serialized to keep the schema portable
+// (the FAQ corpus is small enough that we don't need pgvector yet).
+model FAQEmbedding {
+  faqId       String   @id
+  vector      String   @db.Text // JSON-serialized number[] (768 dims)
+  contentHash String   // sha256(text passed to embed())
+  model       String   // e.g. "text-embedding-004" - lets us re-embed when model changes
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  @@index([model])
+}
+
 // ApprovalTask human approval task
 model ApprovalTask {
   id          String   @id @default(cuid())

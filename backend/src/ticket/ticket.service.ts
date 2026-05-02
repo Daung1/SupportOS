@@ -18,6 +18,20 @@ import { UserService } from '../user/user.service';
 import { CreateTicketDto } from './dto/create-ticket.dto';
 import { SessionContextFactory } from '../queue/session-context.factory';
 
+/**
+ * User-facing fallback when a ticket can't be auto-resolved.
+ *
+ * The raw cause - "Max iterations (10) reached without finishing",
+ * "Gemini API call failed: 503", DLQ messages, post-process exceptions,
+ * etc. - is technical debug detail, not something we want the requester
+ * to read in the AI Response panel. We replace it everywhere we'd
+ * otherwise persist `cascade.error` / `result.error` to `suggestion`,
+ * and stash the original error string in `analysis.error` (see
+ * `buildAnalysisJson`) so on-call engineers still have it.
+ */
+const FRIENDLY_FAILURE_MESSAGE =
+  'We have received your ticket and our support team will get back to you shortly. Thank you for your patience.';
+
 @Injectable()
 export class TicketService {
   private readonly logger = new Logger(TicketService.name);
@@ -59,9 +73,20 @@ export class TicketService {
   }
 
   /**
-   * Quick answer mode: only check L1 (FAQ) and L2 (SimpleFilter),
-   * do NOT run L3 (MultiAgent). Returns either an answer or a flag
-   * indicating the user needs to generate a full ticket for deep analysis.
+   * Quick-answer mode: run L0 Triage and L1 vector FAQ only, never L3.
+   *
+   * Three terminal outcomes the frontend cares about:
+   *   1. matched = true: an FAQ was found, render `answer` directly
+   *      with optional `category` chip.
+   *   2. outOfDomain = true: the user said "thanks" / "hi" / abuse;
+   *      render `answer` (a friendly canned message) verbatim and
+   *      do NOT show the "Generate as Ticket" CTA.
+   *   3. requiresTicket = true: in-domain but L1 didn't find a match
+   *      (or input was vague/complaint); offer ticket creation.
+   *
+   * The shape mirrors what cascade-orchestrator already produces;
+   * we just flatten a few flags so the controller/frontend don't
+   * need to know about CascadeResult.
    */
   async quickAnswer(question: string, userId?: string) {
     try {
@@ -90,18 +115,29 @@ export class TicketService {
         true, // skipLevel3
       );
 
+      const matched = result.level === 1;
+
       return {
-        success: result.level === 1 || result.level === 2,
-        level: result.level as 0 | 1 | 2,
+        success: matched || !!result.outOfDomain,
+        // skipLevel3=true above means cascade can never return level 3.
+        // Narrow the type for the controller's DTO contract.
+        level: result.level === 1 ? (1 as const) : (0 as const),
         source: result.source,
-        answer: result.level > 0 ? result.answer : undefined,
+        answer: matched || result.outOfDomain ? result.answer : undefined,
         category: result.category,
         confidence: result.confidence,
-        requiresTicket: result.level === 0,
-        message:
-          result.level === 0
-            ? 'No quick answer found. Please generate a ticket for AI-powered deep analysis.'
-            : undefined,
+        requiresTicket: result.requiresTicket ?? false,
+        outOfDomain: result.outOfDomain ?? false,
+        intent: result.triage?.intent ?? null,
+        reformulated: result.triage?.reformulated ?? null,
+        message: matched
+          ? undefined
+          : result.outOfDomain
+            ? result.answer
+            : result.requiresTicket
+              ? result.answer ||
+                'No quick answer found. Please generate a ticket for customer support.'
+              : undefined,
       };
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
@@ -111,6 +147,9 @@ export class TicketService {
         level: 0 as const,
         source: 'Error',
         requiresTicket: true,
+        outOfDomain: false,
+        intent: null,
+        reformulated: null,
         message: 'Quick answer failed. Please generate a ticket.',
         error: message,
       };
@@ -196,7 +235,10 @@ export class TicketService {
         void this.ticketRepository
           .updateOutcome(ticketId, {
             status: 'failed',
-            suggestion: message,
+            suggestion: FRIENDLY_FAILURE_MESSAGE,
+            // Preserve the technical error in `analysis.error` for
+            // on-call diagnostics; the user only sees `suggestion`.
+            analysis: { error: message } as Prisma.InputJsonValue,
           })
           .catch((e) =>
             this.logger.error(
@@ -212,18 +254,29 @@ export class TicketService {
   ): Promise<void> {
     try {
       if (result.dlq) {
+        const rawError = result.error ?? 'Ticket moved to dead-letter queue';
+        this.logger.warn(
+          `Ticket "${ticketId}" hit DLQ: ${rawError}`,
+        );
         await this.ticketRepository.updateOutcome(ticketId, {
           status: 'dlq',
-          suggestion: result.error ?? 'Ticket moved to dead-letter queue',
+          suggestion: FRIENDLY_FAILURE_MESSAGE,
+          analysis: { error: rawError } as Prisma.InputJsonValue,
         });
         return;
       }
 
       const cascade = result.cascadeResult;
       if (!cascade) {
+        const rawError =
+          result.error ?? 'Processing failed before cascade result';
+        this.logger.warn(
+          `Ticket "${ticketId}" failed pre-cascade: ${rawError}`,
+        );
         await this.ticketRepository.updateOutcome(ticketId, {
           status: 'failed',
-          suggestion: result.error ?? 'Processing failed before cascade result',
+          suggestion: FRIENDLY_FAILURE_MESSAGE,
+          analysis: { error: rawError } as Prisma.InputJsonValue,
         });
         return;
       }
@@ -242,14 +295,23 @@ export class TicketService {
       }
 
       if (!cascade.success) {
+        // If the cascade managed to produce *some* answer despite a
+        // soft-failure (e.g. low-confidence multi-agent), surface that
+        // to the user; otherwise show the friendly fallback. The raw
+        // cascade.error is always preserved in `analysis.error`.
+        const rawError = cascade.error ?? 'Cascade reported failure';
+        this.logger.warn(
+          `Ticket "${ticketId}" cascade soft-failure: ${rawError}`,
+        );
+        const userVisible = cascade.answer || FRIENDLY_FAILURE_MESSAGE;
         await this.ticketRepository.updateOutcome(ticketId, {
           status: 'failed',
-          suggestion:
-            cascade.answer ||
-            cascade.error ||
-            'Cascade reported failure',
+          suggestion: userVisible,
           confidence: cascade.confidence,
-          analysis: analysis as Prisma.InputJsonValue,
+          analysis: {
+            ...analysis,
+            error: rawError,
+          } as Prisma.InputJsonValue,
           hallucination: cascade.safetyDecision?.scores?.final,
         });
         return;
@@ -279,7 +341,10 @@ export class TicketService {
       );
       await this.ticketRepository.updateOutcome(ticketId, {
         status: 'failed',
-        suggestion: `Post-process error: ${message}`,
+        suggestion: FRIENDLY_FAILURE_MESSAGE,
+        analysis: {
+          error: `Post-process error: ${message}`,
+        } as Prisma.InputJsonValue,
       });
     }
   }
@@ -347,7 +412,9 @@ export class TicketService {
       type,
       confidence: cascade.confidence,
       reason: `Processed by ${cascade.source} at cascade level ${cascade.level}`,
-      matchedKeywords: cascade.matchedKeywords ?? [],
+      faqId: cascade.faqId,
+      faqMargin: cascade.faqMargin,
+      triage: cascade.triage,
     };
   }
 

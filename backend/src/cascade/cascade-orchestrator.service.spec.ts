@@ -1,34 +1,28 @@
 /// <reference types="jest" />
 
 /**
- * CascadeOrchestrator unit tests.
+ * CascadeOrchestrator unit tests (post-refactor).
  *
- * These tests focus on the three-layer escalation logic:
- *   - L1 FAQ hit short-circuits before L2/L3 are touched
- *   - L2 Filter hit short-circuits before L3 is touched
- *   - L3 runs only when both L1 and L2 miss
- *   - L3 failures are surfaced via CascadeResult.success=false
- *   - L1/L2/L3 hits each emit distinct cascade.* log events
- *   - a broken LogRepository never aborts the cascade
+ * Topology under test:
+ *   L0 TriageService (LLM Flash router)
+ *   L1 FAQMatcher (vector)
+ *   L3 MultiAgent (full pipeline)
+ *   - Legacy L2 SimpleFilter has been retired.
  *
- * FAQMatcher and SimpleFilter are real instances (cheap, pure-JS
- * objects), but MultiAgentOrchestrator is stubbed out so we do not
- * need a full agent/pipeline stack for these cases.
+ * The L0/L1 services here are stubbed so we can simulate every
+ * relevant triage outcome without hitting the model. MultiAgent
+ * is also stubbed.
  */
 
-import { FAQMatcher } from './faq.matcher';
-import { SimpleFilter } from './simple.filter';
 import { CascadeOrchestrator } from './cascade-orchestrator.service';
+import { FAQMatcher, FAQMatchResult } from './faq.matcher';
+import { TriageResult, TriageService } from './triage.service';
 import { ISessionContext } from '../agents/core/execution-context.interface';
 import { MultiAgentResult } from '../agents/orchestrator/multi-agent-orchestrator.service';
 import {
   ILogRepository,
   PipelineLogEvent,
 } from '../agents/orchestrator/ports/orchestrator-ports';
-
-// ---------------------------------------------------------------------------
-// Stubs
-// ---------------------------------------------------------------------------
 
 class StubMultiAgentOrchestrator {
   execute = jest.fn<Promise<MultiAgentResult>, [ISessionContext]>();
@@ -86,249 +80,225 @@ function makeStubMultiAgentResult(
   };
 }
 
-function buildFaqDb(): any[] {
-  return [
-    {
-      id: 'shipping_001',
-      question: 'How long does standard shipping take?',
-      answer: 'Standard shipping takes 3-5 business days.',
-      keywords: ['shipping', 'standard', 'take'],
-      category: 'shipping',
-      frequency: 100,
-    },
-  ];
-}
-
-function buildFilterRules() {
-  return {
-    shipping: {
-      keywords: [
-        'shipping',
-        'delivery',
-        'tracking',
-        'package',
-        'ship',
-        'dispatch',
-      ],
-      description: 'Shipping related',
-    },
-    billing: {
-      keywords: ['billing', 'payment', 'charge', 'refund', 'invoice'],
-      description: 'Billing related',
-    },
+function makeStubTriage(
+  result: Partial<TriageResult> = {},
+): TriageService {
+  const full: TriageResult = {
+    inDomain: true,
+    intent: 'question',
+    category: null,
+    confidence: 0.9,
+    reformulated: null,
+    reason: 'stub',
+    ...result,
   };
+  return {
+    triage: jest.fn(async () => full),
+  } as unknown as TriageService;
 }
 
-function buildOrchestrator({
-  multiAgent,
-  logRepo,
-  faqThreshold = 0.9,
-  filterMin = 0.3,
-  filterMax = 1.0,
-}: {
-  multiAgent: StubMultiAgentOrchestrator;
-  logRepo?: ILogRepository;
-  faqThreshold?: number;
-  filterMin?: number;
-  filterMax?: number;
-}) {
-  const faq = new FAQMatcher(buildFaqDb(), faqThreshold);
-  const filter = new SimpleFilter(
-    buildFilterRules() as any,
-    filterMin,
-    filterMax,
-  );
-  return new CascadeOrchestrator(
-    faq,
-    filter,
-    multiAgent as any,
-    logRepo,
-  );
+function makeStubFaq(result: Partial<FAQMatchResult>): FAQMatcher {
+  const full: FAQMatchResult = {
+    matched: false,
+    confidence: 0,
+    reason: 'stub',
+    ...result,
+  };
+  return {
+    match: jest.fn(async () => full),
+    setConfidenceThreshold: jest.fn(),
+  } as unknown as FAQMatcher;
 }
 
-// ---------------------------------------------------------------------------
-// Tests
-// ---------------------------------------------------------------------------
-
-describe('CascadeOrchestrator', () => {
-  describe('L1 FAQMatcher hit', () => {
-    it('returns the canned FAQ answer without touching L2/L3', async () => {
-      const multiAgent = new StubMultiAgentOrchestrator();
-      // Lower the L1 threshold so the test FAQ is accepted without
-      // needing a perfect similarity score from the tokenizer.
-      const orchestrator = buildOrchestrator({
-        multiAgent,
-        faqThreshold: 0.4,
+describe('CascadeOrchestrator (post-refactor)', () => {
+  describe('L0 Triage out-of-domain', () => {
+    it('returns the friendly OOD message and skips L1/L3', async () => {
+      const triage = makeStubTriage({
+        inDomain: false,
+        intent: 'greeting',
       });
+      const faq = makeStubFaq({});
+      const multiAgent = new StubMultiAgentOrchestrator();
+      const orch = new CascadeOrchestrator(triage, faq, multiAgent as any);
 
-      const result = await orchestrator.processTicket(
-        makeContext('How long does standard shipping take?'),
+      const result = await orch.processTicket(makeContext('hello!'));
+
+      expect(result.level).toBe(0);
+      expect(result.source).toBe('Triage');
+      expect(result.outOfDomain).toBe(true);
+      expect(result.requiresTicket).toBe(false);
+      expect(result.answer).toMatch(/help/i);
+      expect(faq.match).not.toHaveBeenCalled();
+      expect(multiAgent.execute).not.toHaveBeenCalled();
+    });
+
+    it('treats abuse the same as OOD', async () => {
+      const triage = makeStubTriage({ inDomain: true, intent: 'abuse' });
+      const faq = makeStubFaq({});
+      const multiAgent = new StubMultiAgentOrchestrator();
+      const orch = new CascadeOrchestrator(triage, faq, multiAgent as any);
+
+      const result = await orch.processTicket(makeContext('garbage'));
+
+      expect(result.outOfDomain).toBe(true);
+      expect(faq.match).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('L0 unclear / complaint', () => {
+    it('asks for clarification but flags requiresTicket=true', async () => {
+      const triage = makeStubTriage({ inDomain: true, intent: 'unclear' });
+      const faq = makeStubFaq({});
+      const multiAgent = new StubMultiAgentOrchestrator();
+      const orch = new CascadeOrchestrator(triage, faq, multiAgent as any);
+
+      const result = await orch.processTicket(makeContext('?'));
+
+      expect(result.level).toBe(0);
+      expect(result.source).toBe('Triage');
+      expect(result.outOfDomain).toBe(false);
+      expect(result.requiresTicket).toBe(true);
+      expect(faq.match).not.toHaveBeenCalled();
+      expect(multiAgent.execute).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('L1 FAQ vector hit', () => {
+    it('returns the FAQ answer without invoking L3', async () => {
+      const triage = makeStubTriage({
+        intent: 'question',
+        category: 'billing',
+        reformulated: 'How do I get a refund?',
+      });
+      const faq = makeStubFaq({
+        matched: true,
+        answer: 'Refunds processed within 5-7 business days.',
+        confidence: 0.91,
+        faqId: 'billing_003',
+        category: 'billing',
+        margin: 0.1,
+      });
+      const multiAgent = new StubMultiAgentOrchestrator();
+      const orch = new CascadeOrchestrator(triage, faq, multiAgent as any);
+
+      const result = await orch.processTicket(makeContext('how to refund?'));
+
+      expect(faq.match).toHaveBeenCalledWith(
+        'How do I get a refund?',
+        'billing',
       );
-
       expect(result.level).toBe(1);
       expect(result.source).toBe('FAQMatcher');
-      expect(result.success).toBe(true);
-      expect(result.answer).toBe('Standard shipping takes 3-5 business days.');
-      expect(result.faqId).toBe('shipping_001');
-      expect(result.category).toBe('shipping');
+      expect(result.faqId).toBe('billing_003');
+      expect(result.faqMargin).toBe(0.1);
       expect(multiAgent.execute).not.toHaveBeenCalled();
     });
 
-    it('emits cascade.start, cascade.level1_hit, cascade.end to the log repo', async () => {
+    it('passes raw text to FAQMatcher when no reformulation', async () => {
+      const triage = makeStubTriage({ intent: 'question', reformulated: null });
+      const faq = makeStubFaq({ matched: true, confidence: 0.9 });
       const multiAgent = new StubMultiAgentOrchestrator();
-      const logRepo = makeLogRepo();
-      const orchestrator = buildOrchestrator({
-        multiAgent,
-        logRepo,
-        faqThreshold: 0.4,
-      });
+      const orch = new CascadeOrchestrator(triage, faq, multiAgent as any);
 
-      await orchestrator.processTicket(
-        makeContext('How long does standard shipping take?'),
-      );
+      await orch.processTicket(makeContext('original text'));
 
-      const types = logRepo.appendPipelineEvent.mock.calls.map(
-        (c) => (c[0] as PipelineLogEvent).type,
-      );
-      expect(types).toEqual(
-        expect.arrayContaining([
-          'cascade.start',
-          'cascade.level1_hit',
-          'cascade.end',
-        ]),
-      );
-      expect(types).not.toContain('cascade.level2_hit');
-      expect(types).not.toContain('cascade.level3_entry');
+      expect(faq.match).toHaveBeenCalledWith('original text', undefined);
     });
   });
 
-  describe('L2 SimpleFilter hit', () => {
-    it('classifies and returns without invoking L3 when L1 misses', async () => {
-      const multiAgent = new StubMultiAgentOrchestrator();
-      const orchestrator = buildOrchestrator({
-        multiAgent,
-        faqThreshold: 0.99,
-      });
-
-      const result = await orchestrator.processTicket(
-        makeContext('shipping delivery tracking package'),
-      );
-
-      expect(result.level).toBe(2);
-      expect(result.source).toBe('SimpleFilter');
-      expect(result.success).toBe(true);
-      expect(result.category).toBe('shipping');
-      expect(result.matchedKeywords?.length ?? 0).toBeGreaterThan(0);
-      expect(multiAgent.execute).not.toHaveBeenCalled();
-    });
-
-    it('emits cascade.level1_miss then cascade.level2_hit', async () => {
-      const multiAgent = new StubMultiAgentOrchestrator();
-      const logRepo = makeLogRepo();
-      const orchestrator = buildOrchestrator({
-        multiAgent,
-        logRepo,
-        faqThreshold: 0.99,
-      });
-
-      await orchestrator.processTicket(
-        makeContext('shipping delivery tracking package'),
-      );
-
-      const types = logRepo.appendPipelineEvent.mock.calls.map(
-        (c) => (c[0] as PipelineLogEvent).type,
-      );
-      expect(types).toEqual(
-        expect.arrayContaining([
-          'cascade.start',
-          'cascade.level1_miss',
-          'cascade.level2_hit',
-          'cascade.end',
-        ]),
-      );
-      expect(types).not.toContain('cascade.level3_entry');
-    });
-  });
-
-  describe('L3 MultiAgent fallback', () => {
-    it('invokes MultiAgentOrchestrator when both L1 and L2 miss', async () => {
+  describe('L1 miss → L3 fallback', () => {
+    it('escalates to MultiAgent when L1 below threshold', async () => {
+      const triage = makeStubTriage({ intent: 'question' });
+      const faq = makeStubFaq({ matched: false, confidence: 0.4 });
       const multiAgent = new StubMultiAgentOrchestrator();
       multiAgent.execute.mockResolvedValue(
         makeStubMultiAgentResult('LLM-generated answer'),
       );
-      const orchestrator = buildOrchestrator({
-        multiAgent,
-        faqThreshold: 0.99,
-        filterMin: 0.95, // force filter miss
-      });
+      const orch = new CascadeOrchestrator(triage, faq, multiAgent as any);
 
-      const ctx = makeContext('completely random unrelated text xyz');
-      const result = await orchestrator.processTicket(ctx);
+      const ctx = makeContext('truly novel question');
+      const result = await orch.processTicket(ctx);
 
       expect(multiAgent.execute).toHaveBeenCalledWith(ctx);
       expect(result.level).toBe(3);
       expect(result.source).toBe('MultiAgent');
-      expect(result.success).toBe(true);
       expect(result.answer).toBe('LLM-generated answer');
-      expect(result.category).toBe('general');
-      expect(result.pipelineResult).toBeDefined();
     });
 
-    it('propagates pipeline failure into CascadeResult', async () => {
+    it('returns level=0 + requiresTicket when skipLevel3 and L1 misses', async () => {
+      const triage = makeStubTriage({ intent: 'question', category: 'shipping' });
+      const faq = makeStubFaq({ matched: false, confidence: 0.5 });
       const multiAgent = new StubMultiAgentOrchestrator();
-      multiAgent.execute.mockResolvedValue(
-        makeStubMultiAgentResult('', false),
-      );
-      const orchestrator = buildOrchestrator({
-        multiAgent,
-        faqThreshold: 0.99,
-        filterMin: 0.95,
-      });
+      const orch = new CascadeOrchestrator(triage, faq, multiAgent as any);
 
-      const result = await orchestrator.processTicket(
-        makeContext('completely random text xyz'),
+      const result = await orch.processTicket(
+        makeContext('novel question'),
+        true,
       );
 
-      expect(result.level).toBe(3);
-      expect(result.success).toBe(false);
-      expect(result.error).toBe('boom');
+      expect(result.level).toBe(0);
+      expect(result.source).toBe('FAQMatcher');
+      expect(result.requiresTicket).toBe(true);
+      expect(result.category).toBe('shipping');
+      expect(multiAgent.execute).not.toHaveBeenCalled();
     });
+  });
 
-    it('returns an error CascadeResult when MultiAgentOrchestrator throws', async () => {
+  describe('error handling', () => {
+    it('wraps unexpected throws in an Error CascadeResult', async () => {
+      const triage = {
+        triage: jest.fn(async () => {
+          throw new Error('triage exploded');
+        }),
+      } as unknown as TriageService;
+      const faq = makeStubFaq({});
       const multiAgent = new StubMultiAgentOrchestrator();
-      multiAgent.execute.mockRejectedValue(new Error('network down'));
-      const orchestrator = buildOrchestrator({
-        multiAgent,
-        faqThreshold: 0.99,
-        filterMin: 0.95,
-      });
+      const orch = new CascadeOrchestrator(triage, faq, multiAgent as any);
 
-      const result = await orchestrator.processTicket(
-        makeContext('completely random text xyz'),
-      );
+      const result = await orch.processTicket(makeContext('anything'));
 
       expect(result.level).toBe(0);
       expect(result.source).toBe('Error');
       expect(result.success).toBe(false);
-      expect(result.error).toBe('network down');
+      expect(result.error).toBe('triage exploded');
     });
 
-    it('emits cascade.level3_entry and cascade.level3_complete', async () => {
+    it('survives a broken LogRepository', async () => {
+      const triage = makeStubTriage({ intent: 'question' });
+      const faq = makeStubFaq({ matched: true, confidence: 0.9, answer: 'ok' });
       const multiAgent = new StubMultiAgentOrchestrator();
-      multiAgent.execute.mockResolvedValue(
-        makeStubMultiAgentResult('answer'),
-      );
       const logRepo = makeLogRepo();
-      const orchestrator = buildOrchestrator({
-        multiAgent,
-        logRepo,
-        faqThreshold: 0.99,
-        filterMin: 0.95,
+      logRepo.appendPipelineEvent.mockImplementation(() => {
+        throw new Error('db down');
       });
-
-      await orchestrator.processTicket(
-        makeContext('completely random text xyz'),
+      const orch = new CascadeOrchestrator(
+        triage,
+        faq,
+        multiAgent as any,
+        logRepo,
       );
+
+      const result = await orch.processTicket(makeContext('a question'));
+
+      expect(result.level).toBe(1);
+      expect(result.success).toBe(true);
+    });
+  });
+
+  describe('logging', () => {
+    it('emits expected events on L1 hit', async () => {
+      const triage = makeStubTriage({ intent: 'question' });
+      const faq = makeStubFaq({ matched: true, confidence: 0.9, answer: 'a' });
+      const multiAgent = new StubMultiAgentOrchestrator();
+      const logRepo = makeLogRepo();
+      const orch = new CascadeOrchestrator(
+        triage,
+        faq,
+        multiAgent as any,
+        logRepo,
+      );
+
+      await orch.processTicket(makeContext('q'));
 
       const types = logRepo.appendPipelineEvent.mock.calls.map(
         (c) => (c[0] as PipelineLogEvent).type,
@@ -336,66 +306,41 @@ describe('CascadeOrchestrator', () => {
       expect(types).toEqual(
         expect.arrayContaining([
           'cascade.start',
+          'cascade.level0_triage',
+          'cascade.level1_hit',
+          'cascade.end',
+        ]),
+      );
+      expect(types).not.toContain('cascade.level3_entry');
+    });
+
+    it('emits L3 events when escalating', async () => {
+      const triage = makeStubTriage({ intent: 'question' });
+      const faq = makeStubFaq({ matched: false, confidence: 0.3 });
+      const multiAgent = new StubMultiAgentOrchestrator();
+      multiAgent.execute.mockResolvedValue(makeStubMultiAgentResult('a'));
+      const logRepo = makeLogRepo();
+      const orch = new CascadeOrchestrator(
+        triage,
+        faq,
+        multiAgent as any,
+        logRepo,
+      );
+
+      await orch.processTicket(makeContext('q'));
+
+      const types = logRepo.appendPipelineEvent.mock.calls.map(
+        (c) => (c[0] as PipelineLogEvent).type,
+      );
+      expect(types).toEqual(
+        expect.arrayContaining([
+          'cascade.level0_triage',
           'cascade.level1_miss',
-          'cascade.level2_miss',
           'cascade.level3_entry',
           'cascade.level3_complete',
           'cascade.end',
         ]),
       );
-    });
-  });
-
-  describe('robustness', () => {
-    it('survives a broken LogRepository', async () => {
-      const multiAgent = new StubMultiAgentOrchestrator();
-      multiAgent.execute.mockResolvedValue(
-        makeStubMultiAgentResult('answer'),
-      );
-      const logRepo = makeLogRepo();
-      logRepo.appendPipelineEvent.mockImplementation(() => {
-        throw new Error('db down');
-      });
-      const orchestrator = buildOrchestrator({
-        multiAgent,
-        logRepo,
-        faqThreshold: 0.99,
-        filterMin: 0.95,
-      });
-
-      const result = await orchestrator.processTicket(
-        makeContext('random text xyz'),
-      );
-
-      expect(result.success).toBe(true);
-      expect(result.level).toBe(3);
-    });
-
-    it('handles empty input as a cascade miss that falls to L3', async () => {
-      const multiAgent = new StubMultiAgentOrchestrator();
-      multiAgent.execute.mockResolvedValue(makeStubMultiAgentResult('n/a'));
-      const orchestrator = buildOrchestrator({ multiAgent });
-
-      const result = await orchestrator.processTicket(makeContext(''));
-
-      expect(multiAgent.execute).toHaveBeenCalled();
-      expect(result.level).toBe(3);
-    });
-
-    it('processTickets runs multiple contexts in parallel', async () => {
-      const multiAgent = new StubMultiAgentOrchestrator();
-      const orchestrator = buildOrchestrator({
-        multiAgent,
-        faqThreshold: 0.4,
-      });
-
-      const results = await orchestrator.processTickets([
-        makeContext('How long does standard shipping take?'),
-        makeContext('How long does standard shipping take?'),
-      ]);
-
-      expect(results).toHaveLength(2);
-      expect(results.every((r) => r.level === 1)).toBe(true);
     });
   });
 });

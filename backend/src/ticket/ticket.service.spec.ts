@@ -3,6 +3,8 @@ import {
   ConcurrentOrchestrator,
   ConcurrentTaskResult,
 } from '../queue/concurrent-orchestrator.service';
+import { CascadeOrchestrator } from '../cascade/cascade-orchestrator.service';
+import { SessionContextFactory } from '../queue/session-context.factory';
 import { TicketRepository } from './ticket.repository';
 import { TicketService } from './ticket.service';
 import { UserService } from '../user/user.service';
@@ -22,6 +24,8 @@ describe('TicketService', () => {
     | 'updateOutcome'
   >>;
   let orchestrator: { submit: jest.Mock };
+  let cascadeOrchestrator: { processTicket: jest.Mock };
+  let sessionContextFactory: { build: jest.Mock };
   let userService: { resolveOptional: jest.Mock };
 
   beforeEach(async () => {
@@ -38,6 +42,19 @@ describe('TicketService', () => {
     };
 
     orchestrator = { submit: jest.fn() };
+    cascadeOrchestrator = { processTicket: jest.fn() };
+    sessionContextFactory = {
+      build: jest.fn().mockReturnValue({
+        sessionId: 'sess',
+        taskId: 'task',
+        input: '',
+        state: new Map(),
+        history: [],
+        toolRegistry: {} as any,
+        modelClient: {} as any,
+        metadata: {},
+      }),
+    };
     userService = { resolveOptional: jest.fn().mockResolvedValue(null) };
 
     const module: TestingModule = await Test.createTestingModule({
@@ -47,6 +64,14 @@ describe('TicketService', () => {
         {
           provide: ConcurrentOrchestrator,
           useValue: orchestrator,
+        },
+        {
+          provide: CascadeOrchestrator,
+          useValue: cascadeOrchestrator,
+        },
+        {
+          provide: SessionContextFactory,
+          useValue: sessionContextFactory,
         },
         { provide: UserService, useValue: userService },
       ],

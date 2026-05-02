@@ -1,29 +1,40 @@
 /**
- * CascadeOrchestrator - three-layer ticket handling pipeline.
+ * CascadeOrchestrator - revised three-layer ticket handling pipeline.
  *
- * Responsibilities (see program plan Phase A.5):
- *   L1 FAQMatcher   - high-precision canned answers (fast + free)
- *   L2 SimpleFilter - rule-based category classification (fast + free)
- *   L3 MultiAgent   - full LLM agent pipeline (A.4) as fallback
+ * Layers:
+ *   L0 TriageService - LLM Flash router. Decides if the input is
+ *                      in-domain, what intent it is, and offers a
+ *                      category hint + optional rewrite. Out-of-domain
+ *                      inputs (greetings, abuse, chitchat) short-
+ *                      circuit here without touching L1/L3.
+ *   L1 FAQMatcher    - vector retrieval over the FAQ corpus. Uses
+ *                      the L0 reformulated text when available.
+ *                      Returns top-1 match if score and margin both
+ *                      pass thresholds.
+ *   L3 MultiAgent    - full LLM pipeline as fallback for novel
+ *                      questions L1 didn't handle.
  *
- * The orchestrator escalates from L1 -> L2 -> L3 and short-circuits as
- * soon as a layer produces an answer with sufficient confidence.  This
- * is the "cheapest-first" routing pattern used by production support
- * systems: the vast majority of tickets are answered by the free L1/L2
- * layers, and only the truly novel ones cost LLM tokens.
+ * The legacy L2 SimpleFilter has been removed: its keyword-based
+ * category classification is fully subsumed by L0's category output,
+ * and the "reply with a templated category acknowledgement" UX it
+ * provided was always a stopgap. With L0 we now have a real intent
+ * signal, so we either answer (L1) or escalate (L3) — no third path.
  *
- * Design notes:
- * - Input is an ISessionContext (not a raw string).  L1 and L2 read
- *   `context.input`; L3 needs the full context for tool/model access.
- * - MultiAgentOrchestrator is injected and always available in prod.
- *   For tests we allow a stub implementation via the constructor.
- * - ILogRepository is optional.  When wired, each layer hit/miss is
- *   persisted to TicketLog with a distinct `cascade.*` type so callers
- *   can reconstruct the cascade trace post-hoc.
- * - The cascade itself does not emit WebSocket events directly; L3
- *   handles that through MultiAgentOrchestrator.  L1/L2 hits are fast
- *   enough that a single `ticket.completed` after the response is
- *   sufficient (emitted from the controller layer).
+ * Flow:
+ *   processTicket(ctx, skipLevel3?)
+ *     -> L0.triage(text)
+ *     -> if !inDomain or intent in {greeting, chitchat, abuse}:
+ *          return canned friendly response (level 0, success=false,
+ *          requiresLevel3=false). Frontend renders this directly.
+ *     -> if intent in {complaint, unclear}:
+ *          return clarification prompt (level 0, success=false,
+ *          requiresLevel3=true so caller can offer ticket creation).
+ *     -> intent=question:
+ *          q := reformulated ?? raw
+ *          L1.match(q, categoryHint)
+ *          if matched -> return level 1 answer
+ *          if skipLevel3 -> return "no quick answer" with category
+ *          else -> L3.execute(ctx) -> return level 3 answer
  */
 
 import { Inject, Injectable, Logger, Optional } from '@nestjs/common';
@@ -35,17 +46,22 @@ import {
 import { SharedSafetyResult } from '../agents/core/shared-state';
 import { ISessionContext } from '../agents/core/execution-context.interface';
 import { FAQMatcher, FAQMatchResult } from './faq.matcher';
-import { SimpleFilter, SimpleFilterResult } from './simple.filter';
+import { TriageResult, TriageService } from './triage.service';
 
 export type CascadeSource =
+  | 'Triage'
   | 'FAQMatcher'
-  | 'SimpleFilter'
   | 'MultiAgent'
   | 'Error';
 
 export interface CascadeResult {
-  /** 1 = FAQ, 2 = Filter, 3 = MultiAgent, 0 = error before any layer. */
-  level: 0 | 1 | 2 | 3;
+  /**
+   * 0 = no answer (either OOD, or quick-answer mode escalated)
+   * 1 = FAQ vector hit
+   * 3 = MultiAgent full pipeline
+   * (level 2 was the legacy SimpleFilter; intentionally retired.)
+   */
+  level: 0 | 1 | 3;
   source: CascadeSource;
   success: boolean;
   category: string;
@@ -54,19 +70,30 @@ export interface CascadeResult {
   processingTimeMs: number;
   error?: string;
 
-  // Layer-specific diagnostic fields.  Consumers that want to render
-  // the full trace can pull whichever field matches `level`.
   faqId?: string;
-  matchedKeywords?: string[];
+  faqMargin?: number;
   pipelineResult?: MultiAgentResult;
   safetyDecision?: SharedSafetyResult;
+
+  /** Triage signals attached to every cascade run for downstream UI. */
+  triage?: TriageResult;
+  /**
+   * True when L0 decided the input is out-of-domain (chitchat,
+   * greeting, abuse) and we returned a friendly response without
+   * trying to retrieve. The frontend uses this to render the canned
+   * message verbatim instead of the FAQ/AI flow.
+   */
+  outOfDomain?: boolean;
+  /**
+   * True when the cascade decided the user should escalate to a
+   * full ticket (no quick answer found, or input was too vague).
+   * Distinct from outOfDomain: an OOD input never warrants a ticket.
+   */
+  requiresTicket?: boolean;
 }
 
 export interface CascadeOrchestratorOptions {
-  /**
-   * Override the FAQMatcher's minimum confidence for accepting a L1 hit.
-   * If omitted the FAQMatcher's own default applies.
-   */
+  /** Override FAQMatcher's absolute score threshold. */
   faqMinConfidence?: number;
 }
 
@@ -74,13 +101,20 @@ export const CASCADE_ORCHESTRATOR_OPTIONS = Symbol(
   'CASCADE_ORCHESTRATOR_OPTIONS',
 );
 
+const FRIENDLY_OOD_MESSAGE =
+  "Hi! I'm here to help with order, shipping, refund, account, or product questions. " +
+  'Could you describe what you need help with?';
+const CLARIFY_MESSAGE =
+  'I want to make sure I help with the right thing — could you describe your issue ' +
+  'in a sentence or two? For example: "my order #1234 hasn\'t arrived" or "I want to refund order #5678".';
+
 @Injectable()
 export class CascadeOrchestrator {
   private readonly logger = new Logger(CascadeOrchestrator.name);
 
   constructor(
+    private readonly triageService: TriageService,
     private readonly faqMatcher: FAQMatcher,
-    private readonly simpleFilter: SimpleFilter,
     private readonly multiAgentOrchestrator: MultiAgentOrchestrator,
     @Optional() @Inject(LOG_REPOSITORY)
     private readonly logRepository?: ILogRepository,
@@ -107,10 +141,84 @@ export class CascadeOrchestrator {
     this.appendLog({ ...logCtx, type: 'cascade.start', timestamp: startedAt });
 
     try {
-      // ------------------- Layer 1: FAQMatcher -------------------
-      const faqResult = await this.faqMatcher.match(ticketText);
+      // ------------------- Layer 0: Triage -----------------------
+      const triage = await this.triageService.triage(ticketText);
+      this.appendLog({
+        ...logCtx,
+        type: 'cascade.level0_triage',
+        timestamp: Date.now(),
+        payload: {
+          inDomain: triage.inDomain,
+          intent: triage.intent,
+          category: triage.category,
+          confidence: triage.confidence,
+          degraded: triage.degraded ?? false,
+        },
+      });
+
+      // OOD or pure social -> friendly response, do not retrieve.
+      if (
+        !triage.inDomain ||
+        triage.intent === 'greeting' ||
+        triage.intent === 'chitchat' ||
+        triage.intent === 'abuse'
+      ) {
+        const result: CascadeResult = {
+          level: 0,
+          source: 'Triage',
+          success: true,
+          category: 'out_of_domain',
+          answer: FRIENDLY_OOD_MESSAGE,
+          confidence: triage.confidence,
+          processingTimeMs: Date.now() - startedAt,
+          triage,
+          outOfDomain: true,
+          requiresTicket: false,
+        };
+        this.appendLog({
+          ...logCtx,
+          type: 'cascade.end',
+          timestamp: Date.now(),
+          payload: { level: 0, outOfDomain: true },
+        });
+        return result;
+      }
+
+      // Vague/complaint -> ask for clarification, but still allow
+      // the user to escalate to a real ticket if they choose.
+      if (triage.intent === 'complaint' || triage.intent === 'unclear') {
+        const result: CascadeResult = {
+          level: 0,
+          source: 'Triage',
+          success: true,
+          category: triage.category ?? 'unclear',
+          answer: CLARIFY_MESSAGE,
+          confidence: triage.confidence,
+          processingTimeMs: Date.now() - startedAt,
+          triage,
+          outOfDomain: false,
+          requiresTicket: true,
+        };
+        this.appendLog({
+          ...logCtx,
+          type: 'cascade.end',
+          timestamp: Date.now(),
+          payload: { level: 0, intent: triage.intent },
+        });
+        return result;
+      }
+
+      // intent === 'question': prefer the rewritten form for
+      // retrieval since paraphrases embed slightly better.
+      const queryForL1 = triage.reformulated ?? ticketText;
+
+      // ------------------- Layer 1: Vector FAQMatcher --------------
+      const faqResult = await this.faqMatcher.match(
+        queryForL1,
+        triage.category ?? undefined,
+      );
       if (faqResult.matched) {
-        const result = this.buildLevel1Result(faqResult, startedAt);
+        const result = this.buildLevel1Result(faqResult, startedAt, triage);
         this.appendLog({
           ...logCtx,
           type: 'cascade.level1_hit',
@@ -118,6 +226,8 @@ export class CascadeOrchestrator {
           payload: {
             faqId: faqResult.faqId,
             confidence: faqResult.confidence,
+            margin: faqResult.margin,
+            categoryHint: triage.category,
             processingTimeMs: faqResult.processingTime,
           },
         });
@@ -136,49 +246,17 @@ export class CascadeOrchestrator {
         payload: {
           confidence: faqResult.confidence,
           reason: faqResult.reason,
+          margin: faqResult.margin,
         },
       });
 
-      // ------------------- Layer 2: SimpleFilter -----------------
-      const filterResult = await this.simpleFilter.classify(ticketText);
-      if (filterResult.classified) {
-        const result = this.buildLevel2Result(filterResult, startedAt);
-        this.appendLog({
-          ...logCtx,
-          type: 'cascade.level2_hit',
-          timestamp: Date.now(),
-          payload: {
-            category: filterResult.category,
-            confidence: filterResult.confidence,
-            matchedKeywords: filterResult.matchedKeywords,
-            processingTimeMs: filterResult.processingTime,
-          },
-        });
-        this.appendLog({
-          ...logCtx,
-          type: 'cascade.end',
-          timestamp: Date.now(),
-          payload: { level: 2, success: true },
-        });
-        return result;
-      }
-      this.appendLog({
-        ...logCtx,
-        type: 'cascade.level2_miss',
-        timestamp: Date.now(),
-        payload: {
-          confidence: filterResult.confidence,
-          reason: filterResult.reason,
-        },
-      });
-
-      // If skipLevel3 is true, return early without running MultiAgent
+      // Quick-answer mode: don't burn LLM tokens on L3.
       if (skipLevel3) {
         this.appendLog({
           ...logCtx,
           type: 'cascade.level3_skipped',
           timestamp: Date.now(),
-          payload: { reason: 'Quick answer mode - L1/L2 insufficient' },
+          payload: { reason: 'Quick answer mode - L1 below threshold' },
         });
         this.appendLog({
           ...logCtx,
@@ -188,24 +266,27 @@ export class CascadeOrchestrator {
         });
         return {
           level: 0,
-          source: 'Error',
+          source: 'FAQMatcher',
           success: false,
-          category: 'requires_deep_analysis',
+          category: triage.category ?? 'requires_deep_analysis',
           answer: '',
-          confidence: 0,
+          confidence: faqResult.confidence,
           processingTimeMs: Date.now() - startedAt,
           error: 'No quick answer found. Please generate a ticket for deep analysis.',
+          triage,
+          outOfDomain: false,
+          requiresTicket: true,
         };
       }
 
-      // ------------------- Layer 3: MultiAgent -------------------
+      // ------------------- Layer 3: MultiAgent ---------------------
       this.appendLog({
         ...logCtx,
         type: 'cascade.level3_entry',
         timestamp: Date.now(),
       });
       const pipelineResult = await this.multiAgentOrchestrator.execute(context);
-      const result = this.buildLevel3Result(pipelineResult, startedAt);
+      const result = this.buildLevel3Result(pipelineResult, startedAt, triage);
       this.appendLog({
         ...logCtx,
         type: 'cascade.level3_complete',
@@ -266,41 +347,28 @@ export class CascadeOrchestrator {
   private buildLevel1Result(
     faq: FAQMatchResult,
     startedAt: number,
+    triage: TriageResult,
   ): CascadeResult {
     return {
       level: 1,
       source: 'FAQMatcher',
       success: true,
-      category: this.extractCategoryFromFaqId(faq.faqId),
+      category: faq.category ?? this.extractCategoryFromFaqId(faq.faqId),
       answer: faq.answer ?? '',
       confidence: faq.confidence,
       processingTimeMs: Date.now() - startedAt,
       faqId: faq.faqId,
-    };
-  }
-
-  private buildLevel2Result(
-    filter: SimpleFilterResult,
-    startedAt: number,
-  ): CascadeResult {
-    return {
-      level: 2,
-      source: 'SimpleFilter',
-      success: true,
-      category: filter.category ?? 'unknown',
-      // L2 does not produce a real answer; it acknowledges the category
-      // and defers to downstream channels (templated reply, human
-      // handoff, etc).  Matches existing cascade integration semantics.
-      answer: this.level2TemplateAnswer(filter),
-      confidence: filter.confidence,
-      processingTimeMs: Date.now() - startedAt,
-      matchedKeywords: filter.matchedKeywords,
+      faqMargin: faq.margin,
+      triage,
+      outOfDomain: false,
+      requiresTicket: false,
     };
   }
 
   private buildLevel3Result(
     pipeline: MultiAgentResult,
     startedAt: number,
+    triage: TriageResult,
   ): CascadeResult {
     const generator = pipeline.generatorOutput as
       | {
@@ -331,6 +399,7 @@ export class CascadeOrchestrator {
         generator?.category ??
         generator?.classification?.type ??
         generator?.type ??
+        triage.category ??
         'general',
       answer,
       confidence: generator?.confidence ?? 0,
@@ -338,18 +407,14 @@ export class CascadeOrchestrator {
       error: pipeline.error,
       pipelineResult: pipeline,
       safetyDecision: pipeline.safetyDecision,
+      triage,
+      outOfDomain: false,
+      requiresTicket: !pipeline.success,
     };
   }
 
   private firstString(...values: unknown[]): string | undefined {
     return values.find((value): value is string => typeof value === 'string');
-  }
-
-  private level2TemplateAnswer(filter: SimpleFilterResult): string {
-    const category = filter.category ?? 'general';
-    return `This inquiry has been classified as "${category}" (confidence ${(
-      filter.confidence * 100
-    ).toFixed(1)}%). Relevant help articles will be forwarded.`;
   }
 
   private extractCategoryFromFaqId(faqId?: string): string {

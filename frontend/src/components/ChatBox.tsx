@@ -10,7 +10,15 @@ interface ChatMessage {
   id: string;
   type: 'user' | 'system' | 'pending';
   content: string;
+  /** Human-readable time-of-day shown under each bubble. */
   timestamp: string;
+  /**
+   * Monotonic creation time in ms - used as the sort key when we merge
+   * the three message sources (persistent / pending / transient) so a
+   * back-end answer that arrives after the user's input lands directly
+   * below it instead of being grouped with all the other system bubbles.
+   */
+  createdAt: number;
   ticketId?: string;
   isLocalPending?: boolean;  // true if not yet converted to ticket
 }
@@ -28,22 +36,51 @@ const PROCESSED_STATUSES = new Set([
   'dlq',
 ]);
 
+const FAILED_STATUSES = new Set(['failed', 'dlq']);
+
+const REVIEWING_MESSAGE =
+  'Our team is reviewing this ticket and will get back to you shortly.';
+
+/**
+ * Build the system reply that appears under each persisted ticket in
+ * the chat transcript.
+ *
+ * Design rule: the chat is a customer-facing surface, not a debug
+ * panel. So we NEVER expose engineering metadata like
+ *
+ *   "AI processed this ticket via MultiAgent: OTHER (50% confidence)."
+ *   "Max iterations (10) reached without finishing"
+ *   "Gemini API call failed: 503 ..."
+ *
+ * Instead:
+ *   - status=`completed` AND we have a real `ticket.suggestion`
+ *     -> show the suggestion (the actual AI-generated answer)
+ *   - everything else (waiting_approval, failed, dlq, completed-with-
+ *     no-suggestion, low-confidence multi-agent fallthrough)
+ *     -> show the friendly REVIEWING_MESSAGE
+ *
+ * The detailed metadata is still visible in the dedicated AI Response /
+ * ticket-detail panels for engineers.
+ */
 const getAnalysisSummary = (ticket: Ticket): string | null => {
-  const analysis = ticket.analysis as any;
-  if (!analysis) return null;
+  if (FAILED_STATUSES.has(ticket.status)) {
+    return REVIEWING_MESSAGE;
+  }
 
-  const problemType =
-    analysis.classification?.type ||
-    analysis.type ||
-    (analysis.source === 'FAQMatcher' ? 'FAQ' : 'OTHER');
-  const confidence =
-    ticket.confidence ??
-    analysis.confidence ??
-    analysis.classification?.confidence ??
-    0;
-  const source = analysis.source || analysis.cascade?.source || 'AnalyzeAgent';
+  const suggestion = ticket.suggestion?.trim();
 
-  return `AI processed this ticket via ${source}: ${problemType} (${(confidence * 100).toFixed(0)}% confidence).`;
+  // Successful end state: the cascade produced an answer the user
+  // can act on. Echo it directly into the chat so the conversation
+  // ends naturally instead of with a vague "we'll get back to you".
+  if (ticket.status === 'completed' && suggestion) {
+    return suggestion;
+  }
+
+  // waiting_approval => human needs to vet the AI suggestion before
+  // we expose it; "completed" without a suggestion => something went
+  // sideways; anything else still in flight => not ready yet. All
+  // collapse to the same friendly status line.
+  return REVIEWING_MESSAGE;
 };
 
 const formatTimestamp = (iso: string): string => {
@@ -52,6 +89,12 @@ const formatTimestamp = (iso: string): string => {
   } catch {
     return iso;
   }
+};
+
+/** Best-effort ms-since-epoch from a backend ISO string. */
+const toEpochMs = (iso: string): number => {
+  const t = Date.parse(iso);
+  return Number.isFinite(t) ? t : Date.now();
 };
 
 /**
@@ -73,11 +116,15 @@ const buildMessages = (tickets: Ticket[]): ChatMessage[] => {
 
   const messages: ChatMessage[] = [];
   for (const ticket of sorted) {
+    const ticketCreatedMs = toEpochMs(ticket.createdAt);
+    const ticketUpdatedMs = toEpochMs(ticket.updatedAt ?? ticket.createdAt);
+
     messages.push({
       id: `user-${ticket.id}`,
       type: 'user',
       content: ticket.content,
       timestamp: formatTimestamp(ticket.createdAt),
+      createdAt: ticketCreatedMs,
       ticketId: ticket.id,
     });
 
@@ -88,14 +135,19 @@ const buildMessages = (tickets: Ticket[]): ChatMessage[] => {
         type: 'system',
         content: summary,
         timestamp: formatTimestamp(ticket.updatedAt ?? ticket.createdAt),
+        // Pin analyses 1ms after their ticket so they always sort
+        // directly below the user bubble even when the AI replied in
+        // the same wall-clock millisecond.
+        createdAt: Math.max(ticketUpdatedMs, ticketCreatedMs + 1),
         ticketId: ticket.id,
       });
     } else {
       messages.push({
         id: `pending-${ticket.id}`,
         type: 'system',
-        content: `✓ Ticket #${ticket.id.slice(0, 8)} created. Our AI agents are analyzing your request…`,
+        content: `✓ We have received your ticket and will reply as soon as possible. Thank you for your patience.`,
         timestamp: formatTimestamp(ticket.createdAt),
+        createdAt: ticketCreatedMs + 1,
         ticketId: ticket.id,
       });
     }
@@ -126,20 +178,61 @@ export const ChatBox: React.FC<ChatBoxProps> = ({
     [tickets],
   );
 
-  // Combined: persistent + pending + errors (but if in new conversation mode, hide persistent)
+  // Combined: persistent + pending + errors, merged in chronological
+  // order. We can't just spread the three arrays back-to-back: a user
+  // bubble (pending) and the system answer for that same exchange
+  // (transient) need to appear next to each other, not grouped at the
+  // top/bottom of the transcript respectively. Sorting by createdAt
+  // keeps each Q/A pair together.
+  //
+  // Dedupe rules (all keyed on ticketId):
+  //   - When a pending or transient message carries a ticketId and the
+  //     persistent counterpart for that ticket is *visible* in the
+  //     transcript, drop the local copy. This stops the "Generate as
+  //     Ticket" flow from showing two near-identical bubbles (the
+  //     immediate local one + the one rebuilt from `tickets`) and keeps
+  //     the user bubble visible across the SWR refresh window so the
+  //     conversation never flickers blank.
+  //   - In `isNewConversation` mode we deliberately HIDE all backend
+  //     tickets, so dedup must NOT consult `persistentMessages` -
+  //     otherwise a freshly-created ticket lands in the SWR list,
+  //     dedup filters out the local pending bubble, and the
+  //     persistent counterpart isn't rendered either, leaving the
+  //     user's question to vanish from the transcript entirely.
+  //   - Pending/transient messages without a ticketId always render
+  //     (they're tied to the live exchange, not to a backend record).
   const messages = useMemo(() => {
+    const visiblePersistent = isNewConversation ? [] : persistentMessages;
+    const persistedTicketIds = new Set(
+      visiblePersistent
+        .filter((m) => m.ticketId)
+        .map((m) => m.ticketId as string),
+    );
+    const dedupedPending = pendingMessages.filter(
+      (m) => !m.ticketId || !persistedTicketIds.has(m.ticketId),
+    );
+    const dedupedTransient = transientErrors.filter(
+      (m) => !m.ticketId || !persistedTicketIds.has(m.ticketId),
+    );
+
+    const combined = [
+      ...visiblePersistent,
+      ...dedupedPending,
+      ...dedupedTransient,
+    ];
+    combined.sort((a, b) => a.createdAt - b.createdAt);
+
     if (isNewConversation) {
-      // In new conversation mode, only show new conversation banner + pending/errors
-      const newConvMessage: ChatMessage = {
+      const banner: ChatMessage = {
         id: 'new-conv-banner',
         type: 'system',
         content: '📝 New conversation started. Type your question below.',
         timestamp: new Date().toLocaleTimeString(),
+        createdAt: 0, // pin to top
       };
-      return [newConvMessage, ...pendingMessages, ...transientErrors];
+      return [banner, ...combined];
     }
-    // Normal mode: show all persistent + pending + errors
-    return [...persistentMessages, ...pendingMessages, ...transientErrors];
+    return combined;
   }, [isNewConversation, persistentMessages, pendingMessages, transientErrors]);
 
   useEffect(() => {
@@ -161,17 +254,18 @@ export const ChatBox: React.FC<ChatBoxProps> = ({
     setCreatingTicket(true);
 
     // First, add user message to pending display
+    const sendTime = Date.now();
     const userMsg: ChatMessage = {
-      id: `pending-user-${Date.now()}`,
+      id: `pending-user-${sendTime}`,
       type: 'user',
       content: userMessage,
       timestamp: new Date().toLocaleTimeString(),
+      createdAt: sendTime,
       isLocalPending: true,
     };
     setPendingMessages((prev) => [...prev, userMsg]);
 
     try {
-      // Call quick answer endpoint (L1/L2 only)
       const response = await fetch('/api/tickets/chat/answer', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -187,28 +281,64 @@ export const ChatBox: React.FC<ChatBoxProps> = ({
 
       const result = await response.json();
 
-      if (result.success && result.answer) {
-        // Found answer from L1 or L2 - display it
+      // Three terminal outcomes from the cascade:
+      //   1. matched FAQ      -> show answer (raw, no metadata chrome)
+      //   2. out-of-domain    -> show friendly reply but keep the user
+      //                          bubble visible so the conversation
+      //                          history reads naturally; just strip
+      //                          isLocalPending so we don't offer a
+      //                          ticket CTA on chitchat
+      //   3. requires ticket  -> show clarify/no-answer message and
+      //                          keep the bubble + CTA so the user can
+      //                          escalate to a real ticket
+      const matched = result.level === 1 && result.answer;
+
+      const replyTime = Date.now();
+
+      if (result.outOfDomain) {
+        // Demote the pending user bubble to a "settled" message: it
+        // stays in the transcript, but loses the "Generate as Ticket"
+        // affordance because OOD inputs (greetings, chitchat, abuse,
+        // weather questions, …) shouldn't open support tickets.
+        setPendingMessages((prev) =>
+          prev.map((m) =>
+            m.id === userMsg.id ? { ...m, isLocalPending: false } : m,
+          ),
+        );
         setTransientErrors((prev) => [
           ...prev,
           {
-            id: `answer-${Date.now()}`,
+            id: `ood-${replyTime}`,
             type: 'system',
-            content: `${
-              result.level === 1 ? '📚' : '📋'
-            } ${result.source} (${(result.confidence * 100).toFixed(0)}% confidence):\n\n${result.answer}`,
+            content: `👋 ${result.answer || result.message || 'Hi! How can I help?'}`,
             timestamp: new Date().toLocaleTimeString(),
+            createdAt: replyTime,
+          },
+        ]);
+      } else if (matched) {
+        setTransientErrors((prev) => [
+          ...prev,
+          {
+            id: `answer-${replyTime}`,
+            type: 'system',
+            content: result.answer,
+            timestamp: new Date().toLocaleTimeString(),
+            createdAt: replyTime,
           },
         ]);
       } else {
-        // No quick answer found - prompt user to generate ticket
+        // requiresTicket path: in-domain but no quick answer.
+        const note =
+          result.message ||
+          'No quick answer found. Click "Generate as Ticket" below to send to our AI agents.';
         setTransientErrors((prev) => [
           ...prev,
           {
-            id: `no-answer-${Date.now()}`,
+            id: `no-answer-${replyTime}`,
             type: 'system',
-            content: `❌ ${result.message || 'No quick answer found.'}`,
+            content: `🤔 ${note}`,
             timestamp: new Date().toLocaleTimeString(),
+            createdAt: replyTime,
           },
         ]);
       }
@@ -217,13 +347,15 @@ export const ChatBox: React.FC<ChatBoxProps> = ({
         err instanceof Error ? err.message : 'Failed to get quick answer';
       onError?.(errorMsg);
 
+      const errTime = Date.now();
       setTransientErrors((prev) => [
         ...prev,
         {
-          id: `error-${Date.now()}`,
+          id: `error-${errTime}`,
           type: 'system',
           content: `✗ Error: ${errorMsg}`,
           timestamp: new Date().toLocaleTimeString(),
+          createdAt: errTime,
         },
       ]);
     } finally {
@@ -245,19 +377,39 @@ export const ChatBox: React.FC<ChatBoxProps> = ({
       };
 
       const ticket = await createTicket(req);
-      
-      // Remove from pending and let it appear via SWR refresh
-      setPendingMessages((prev) => prev.filter((m) => m.id !== messageId));
+
+      // Don't remove the pending bubble - that produces a ~1s blank
+      // window where the user's question literally disappears between
+      // "ticket created" and "SWR refreshed and rebuilt the message
+      // list". Instead: tag it with the new ticketId and clear the
+      // local-pending flag (which hides the "Generate as Ticket"
+      // button). The dedupe in `messages` useMemo will then quietly
+      // hand off rendering to the persistent `user-${ticket.id}`
+      // bubble once SWR catches up, with no visible transition.
+      setPendingMessages((prev) =>
+        prev.map((m) =>
+          m.id === messageId
+            ? { ...m, isLocalPending: false, ticketId: ticket.id }
+            : m,
+        ),
+      );
       onTicketCreated?.(ticket.id);
 
-      // Show success message
+      // Show success message immediately. We tag it with `ticketId`
+      // so that once SWR refreshes and the persistent buildMessages()
+      // entry for this ticket lands in the transcript, useMemo can
+      // recognise the duplicate and drop the transient one - otherwise
+      // the user sees the same "we received your ticket" bubble twice.
+      const okTime = Date.now();
       setTransientErrors((prev) => [
         ...prev,
         {
-          id: `success-${Date.now()}`,
+          id: `success-${okTime}`,
           type: 'system',
-          content: `✓ Ticket #${ticket.id.slice(0, 8)} created. Our AI agents are analyzing your request…`,
+          content: `✓ We have received your ticket and will reply as soon as possible. Thank you for your patience.`,
           timestamp: new Date().toLocaleTimeString(),
+          createdAt: okTime,
+          ticketId: ticket.id,
         },
       ]);
     } catch (err) {
@@ -265,13 +417,15 @@ export const ChatBox: React.FC<ChatBoxProps> = ({
         err instanceof Error ? err.message : 'Failed to create ticket';
       onError?.(errorMsg);
 
+      const errTime = Date.now();
       setTransientErrors((prev) => [
         ...prev,
         {
-          id: `error-${Date.now()}`,
+          id: `error-${errTime}`,
           type: 'system',
           content: `✗ Error: ${errorMsg}`,
           timestamp: new Date().toLocaleTimeString(),
+          createdAt: errTime,
         },
       ]);
     } finally {
