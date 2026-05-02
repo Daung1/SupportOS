@@ -93,6 +93,28 @@ export interface SharedFAQResult {
   processingTime?: number;
 }
 
+/**
+ * Result of Cascade Level 0 (TriageService).  Seeded into SharedState by
+ * the cascade before the multi-agent pipeline runs so downstream agents
+ * (ProblemClassifier in particular) can use the LLM-derived `category`
+ * and `intent` as a strong prior instead of re-deriving them via
+ * brittle keyword heuristics.
+ *
+ * Shape mirrors `TriageResult` in `cascade/triage.service.ts` - kept
+ * structural here so this file doesn't import from `cascade/` (which
+ * would create a circular dependency through GeneratorAgent ->
+ * ProblemClassifier -> SharedState -> Cascade).
+ */
+export interface SharedTriageResult {
+  inDomain: boolean;
+  intent: 'question' | 'chitchat' | 'greeting' | 'complaint' | 'abuse' | 'unclear';
+  category: 'shipping' | 'billing' | 'account' | 'product' | 'policy' | null;
+  confidence: number;
+  reformulated: string | null;
+  reason: string;
+  degraded?: boolean;
+}
+
 /** Problem classification produced by ProblemClassifier. */
 export interface SharedClassificationResult {
   type: 'FAQ' | 'DOC_ANSWER' | 'TECH_ISSUE' | 'OTHER';
@@ -145,6 +167,7 @@ export interface SharedStateSchema {
   analyzerResult: SharedAnalyzerResult;
   searcherResult: SharedSearcherResult;
   faqResult: SharedFAQResult;
+  triageResult: SharedTriageResult;
   problemClassification: SharedClassificationResult;
   generatorResult: SharedGeneratorResult;
   safetyResult: SharedSafetyResult;
@@ -158,6 +181,7 @@ export const SHARED_STATE_KEYS: readonly SharedStateKey[] = [
   'analyzerResult',
   'searcherResult',
   'faqResult',
+  'triageResult',
   'problemClassification',
   'generatorResult',
   'safetyResult',

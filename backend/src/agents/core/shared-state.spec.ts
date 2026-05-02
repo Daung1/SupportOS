@@ -23,6 +23,7 @@ import {
   SharedClassificationResult,
   SharedGeneratorResult,
   SharedSafetyResult,
+  SharedTriageResult,
 } from './shared-state';
 
 function makeState(init: Record<string, unknown> = {}): Map<string, any> {
@@ -73,6 +74,15 @@ const sampleSafety: SharedSafetyResult = {
   confidence: 0.88,
   scores: { heuristic: 0.9, final: 0.88 },
   reasons: ['high confidence', 'sourced from kb'],
+};
+
+const sampleTriage: SharedTriageResult = {
+  inDomain: true,
+  intent: 'question',
+  category: 'shipping',
+  confidence: 0.9,
+  reformulated: 'Where is my order?',
+  reason: 'order tracking',
 };
 
 describe('SharedState', () => {
@@ -228,6 +238,7 @@ describe('SharedState', () => {
         'analyzerResult',
         'searcherResult',
         'faqResult',
+        'triageResult',
         'problemClassification',
         'generatorResult',
         'safetyResult',
@@ -241,6 +252,7 @@ describe('SharedState', () => {
         analyzerResult: sampleAnalyzer,
         searcherResult: sampleSearcher,
         faqResult: sampleFAQ,
+        triageResult: sampleTriage,
         problemClassification: sampleClassification,
         generatorResult: sampleGenerator,
         safetyResult: sampleSafety,

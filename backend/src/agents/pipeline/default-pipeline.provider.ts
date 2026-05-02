@@ -100,17 +100,41 @@ export class DefaultPipelineProvider implements IPipelineProvider {
           id: DEFAULT_PIPELINE_ROUTES.analyzer,
           agent: this.analyzerAgent,
           publishAs: 'analyzerResult',
+          // Analyzer is the contract source for downstream routing
+          // (problem classification, scenario selection). If it fails
+          // we genuinely have nothing useful to give Generator, so
+          // abort. This is the orchestrator default; we set it
+          // explicitly for documentation.
+          failurePolicy: 'abort',
         },
         {
           id: DEFAULT_PIPELINE_ROUTES.searcher,
           agent: this.searcherAgent,
           condition: shouldRunSearcher,
           publishAs: 'searcherResult',
+          // Searcher is *advisory*: when the KB has no relevant
+          // article, or Gemini hits a transient 503 mid-think, the
+          // pipeline should still let Generator run with whatever
+          // analyzer + triage information it has.  Generator's
+          // ProblemClassifier can then route to TECH_ISSUE
+          // (Scenario C, file a bug report) or OTHER (Scenario D,
+          // generic "we'll get back to you") instead of the whole
+          // ticket bouncing as `failed`.
+          failurePolicy: 'continue',
+          fallbackOutput: {
+            documentsFound: 0,
+            documents: [],
+            sources: [],
+            avgRelevance: 0,
+            searchQueries: [],
+            summary: 'Searcher unavailable; downstream agents proceeding without KB hits.',
+          },
         },
         {
           id: DEFAULT_PIPELINE_ROUTES.generator,
           agent: this.generatorAgent,
           publishAs: 'generatorResult',
+          failurePolicy: 'abort',
         },
       ],
     };

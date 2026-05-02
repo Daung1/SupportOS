@@ -169,6 +169,30 @@ export class MultiAgentOrchestrator {
         );
       }
       if (!record.skipped && !record.success) {
+        // Route failed after exhausting retries.  Two policies:
+        //   - abort    (default): stop the pipeline, surface failure
+        //   - continue: log warning, publish fallbackOutput (if
+        //               provided AND nothing is already at publishAs),
+        //               carry on to the next route.  Used for advisory
+        //               routes like KB Searcher whose absence shouldn't
+        //               kill the whole ticket - GeneratorAgent's
+        //               classifier can still route to Scenario C
+        //               (TECH_ISSUE bug report) or Scenario D (other)
+        //               using just analyzer + triage signals.
+        const policy = route.failurePolicy ?? 'abort';
+        if (policy === 'continue') {
+          this.logger.warn(
+            `Route "${route.id}" failed but failurePolicy='continue'; ` +
+              `pipeline will proceed without it. error=${record.error}`,
+          );
+          if (route.publishAs && route.fallbackOutput !== undefined) {
+            const existing = shared.raw().get(route.publishAs);
+            if (existing === undefined || existing === null) {
+              shared.raw().set(route.publishAs, route.fallbackOutput);
+            }
+          }
+          continue;
+        }
         return this.abortPipeline(
           pipeline,
           records,

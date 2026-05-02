@@ -45,18 +45,44 @@ export type AgentRouteCondition = (
  *
  * Optional fields let the pipeline author override orchestrator defaults
  * on a per-route basis:
- *   - `condition`  - skip gate (see AgentRouteCondition)
- *   - `timeoutMs`  - overrides the default per-agent timeout (A.4)
- *   - `retries`    - overrides the default retry count (A.4)
- *   - `required`   - if true, a skip (condition=false) causes pipeline
- *                    failure instead of silently continuing.  Defaults
- *                    to false, i.e. conditions are soft by default.
- *   - `publishAs`  - when set, the orchestrator writes the agent's
- *                    output into SharedState under this key after the
- *                    route completes successfully.  Downstream routes'
- *                    conditions can then inspect the output via the
- *                    typed SharedState accessor.  Omit to run the agent
- *                    purely for side effects.
+ *   - `condition`     - skip gate (see AgentRouteCondition)
+ *   - `timeoutMs`     - overrides the default per-agent timeout (A.4)
+ *   - `retries`       - overrides the default retry count (A.4)
+ *   - `required`      - if true, a skip (condition=false) causes
+ *                       pipeline failure instead of silently continuing.
+ *                       Defaults to false, i.e. conditions are soft by
+ *                       default.
+ *   - `failurePolicy` - what the orchestrator should do when this route
+ *                       fails AFTER exhausting retries:
+ *                         'abort'    (default) - stop the pipeline,
+ *                                                report failure to the
+ *                                                caller. Use for routes
+ *                                                whose output downstream
+ *                                                hard-depends on (e.g.
+ *                                                analyzer).
+ *                         'continue' - log a warning, leave any
+ *                                      pre-existing SharedState entry
+ *                                      under `publishAs` untouched,
+ *                                      then proceed to the next route.
+ *                                      Use for advisory routes whose
+ *                                      output downstream agents can
+ *                                      gracefully degrade without (e.g.
+ *                                      KB searcher: if it can't find
+ *                                      docs we still want generator to
+ *                                      run with empty results so
+ *                                      Scenario C / D fallbacks fire).
+ *   - `fallbackOutput`- (optional, only used when failurePolicy is
+ *                       'continue') value the orchestrator publishes
+ *                       under `publishAs` if the route fails AND no
+ *                       prior value exists. Lets downstream agents
+ *                       observe a deterministic "empty" shape instead
+ *                       of `undefined`.
+ *   - `publishAs`     - when set, the orchestrator writes the agent's
+ *                       output into SharedState under this key after
+ *                       the route completes successfully.  Downstream
+ *                       routes' conditions can then inspect the output
+ *                       via the typed SharedState accessor.  Omit to
+ *                       run the agent purely for side effects.
  */
 export interface AgentRoute {
   id: string;
@@ -65,6 +91,8 @@ export interface AgentRoute {
   timeoutMs?: number;
   retries?: number;
   required?: boolean;
+  failurePolicy?: 'abort' | 'continue';
+  fallbackOutput?: unknown;
   publishAs?: SharedStateKey;
 }
 

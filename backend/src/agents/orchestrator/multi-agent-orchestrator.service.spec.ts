@@ -344,6 +344,110 @@ describe('MultiAgentOrchestrator', () => {
       expect(broken.callCount).toBe(1);
     });
 
+    it("continues to the next route when failurePolicy='continue' and publishes fallbackOutput", async () => {
+      // Real-world analogue: SearcherAgent fails (Gemini 503 mid-think
+      // or KB returns nothing useful).  The orchestrator must NOT abort -
+      // it must publish the fallback empty searcher result and let
+      // GeneratorAgent run with whatever analyzer + triage hints exist.
+      const analyzer = new StubAgent({
+        name: 'AnalyzerAgent',
+        output: { confidence: 0.7 },
+      });
+      const flakySearcher = new ThrowingAgent('SearcherAgent', {
+        failFirstN: 100,
+      });
+      const generator = new StubAgent({
+        name: 'GeneratorAgent',
+        output: { type: 'TECH_ISSUE' },
+      });
+
+      const pipeline: AgentPipeline = {
+        id: 'p',
+        routes: [
+          { id: 'analyzer', agent: analyzer, publishAs: 'analyzerResult' },
+          {
+            id: 'searcher',
+            agent: flakySearcher,
+            publishAs: 'searcherResult',
+            retries: 0,
+            failurePolicy: 'continue',
+            fallbackOutput: {
+              documentsFound: 0,
+              documents: [],
+              avgRelevance: 0,
+            },
+          },
+          { id: 'generator', agent: generator, publishAs: 'generatorResult' },
+        ],
+      };
+
+      const orchestrator = makeOrchestrator(pipeline);
+      const ctx = makeContext();
+      const result = await orchestrator.execute(ctx);
+
+      expect(result.success).toBe(true);
+      expect(result.routes[1].success).toBe(false);
+      expect(result.routes[2].success).toBe(true);
+      const shared = SharedState.from(ctx);
+      expect(shared.get('searcherResult')).toMatchObject({
+        documentsFound: 0,
+      });
+      expect(shared.get('generatorResult')).toMatchObject({ type: 'TECH_ISSUE' });
+    });
+
+    it("does not overwrite a pre-existing publishAs value when fallbackOutput is set", async () => {
+      // If something earlier (or the agent itself before throwing) put
+      // a value at publishAs, we keep it.  Fallback is only for the
+      // genuine "nothing was published" case.
+      const flaky = new ThrowingAgent('flaky', { failFirstN: 100 });
+      const pipeline: AgentPipeline = {
+        id: 'p',
+        routes: [
+          {
+            id: 'flaky',
+            agent: flaky,
+            publishAs: 'searcherResult',
+            retries: 0,
+            failurePolicy: 'continue',
+            fallbackOutput: { documentsFound: 0 },
+          },
+        ],
+      };
+
+      const ctx = makeContext();
+      SharedState.from(ctx).set('searcherResult', {
+        documentsFound: 7,
+        avgRelevance: 0.9,
+      });
+      const orchestrator = makeOrchestrator(pipeline);
+      const result = await orchestrator.execute(ctx);
+
+      expect(result.success).toBe(true);
+      expect(SharedState.from(ctx).get('searcherResult')).toMatchObject({
+        documentsFound: 7,
+      });
+    });
+
+    it("aborts (default) when failurePolicy is unset and a route fails", async () => {
+      const flaky = new ThrowingAgent('flaky', { failFirstN: 100 });
+      const generator = new StubAgent({ name: 'gen', output: { x: 1 } });
+
+      const pipeline: AgentPipeline = {
+        id: 'p',
+        routes: [
+          { id: 'flaky', agent: flaky, retries: 0 },
+          { id: 'gen', agent: generator, publishAs: 'generatorResult' },
+        ],
+      };
+
+      const orchestrator = makeOrchestrator(pipeline);
+      const result = await orchestrator.execute(makeContext());
+
+      expect(result.success).toBe(false);
+      // generator must NOT have run
+      expect(result.routes.find((r) => r.routeId === 'gen')).toBeUndefined();
+    });
+
     it('reports BaseAgent with success=false as failed', async () => {
       const bad = new StubAgent({
         name: 'bad',

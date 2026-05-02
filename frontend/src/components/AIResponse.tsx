@@ -5,17 +5,36 @@ interface AIResponseProps {
   finalContent?: string | null;
   category?: string;
   isLoading?: boolean;
+  /**
+   * Ticket lifecycle status. When this is `failed` or `dlq` we render a
+   * dedicated "did not complete" card instead of treating `response` as
+   * AI output - otherwise the friendly fallback ("we have received your
+   * ticket...") shows up under a "Generated Response" header, which
+   * looks like the AI literally generated a status acknowledgment.
+   */
+  status?: string;
+  /**
+   * Raw failure reason (from `ticket.analysis.error`). Optional - only
+   * surfaced under the failure card so engineers can debug without
+   * leaking it as if it were the AI's answer.
+   */
+  failureReason?: string;
 }
+
+const FAILED_STATUSES = new Set(['failed', 'dlq']);
 
 export const AIResponse: React.FC<AIResponseProps> = ({
   response,
   finalContent,
   category,
   isLoading,
+  status,
+  failureReason,
 }) => {
+  const isFailed = !!status && FAILED_STATUSES.has(status);
   // Determine which scenario to render
   const content = finalContent ?? response;
-  
+
   const isRejected = finalContent === null;
   const isApproved = finalContent && finalContent !== response;
 
@@ -32,13 +51,35 @@ export const AIResponse: React.FC<AIResponseProps> = ({
         </div>
       )}
 
-      {!isLoading && !content && (
+      {!isLoading && isFailed && (
+        <div className="bg-amber-50 border border-amber-200 rounded-lg p-4 mb-4">
+          <p className="text-xs font-medium text-amber-700 mb-2">
+            ⚠️ AI processing did not complete
+          </p>
+          <p className="text-sm text-gray-700 mb-3">
+            We couldn't auto-generate a confident answer for this ticket.
+            Our team will pick it up from here and follow up shortly.
+          </p>
+          {failureReason && (
+            <details className="mt-2">
+              <summary className="text-xs text-amber-700 cursor-pointer hover:text-amber-900">
+                Technical details (for support staff)
+              </summary>
+              <p className="text-xs text-gray-600 mt-2 font-mono whitespace-pre-wrap break-words">
+                {failureReason}
+              </p>
+            </details>
+          )}
+        </div>
+      )}
+
+      {!isLoading && !isFailed && !content && (
         <div className="text-center py-8 text-gray-500">
           No response available yet
         </div>
       )}
 
-      {!isLoading && content && (
+      {!isLoading && !isFailed && content && (
         <>
           {/* Scenario: FAQ Match */}
           {category === 'faq' && (

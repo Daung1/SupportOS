@@ -162,6 +162,10 @@ export const TicketDetail: React.FC<TicketDetailProps> = ({
                 response={ticket.suggestion}
                 finalContent={ticket.finalContent}
                 category={ticket.approvalStatus}
+                status={ticket.status}
+                failureReason={
+                  (ticket.analysis as any)?.error as string | undefined
+                }
                 isLoading={
                   streamState.isConnected &&
                   ticket.status === 'processing'
@@ -189,6 +193,10 @@ export const TicketDetail: React.FC<TicketDetailProps> = ({
                 response={ticket.suggestion}
                 finalContent={ticket.finalContent}
                 category={ticket.approvalStatus}
+                status={ticket.status}
+                failureReason={
+                  (ticket.analysis as any)?.error as string | undefined
+                }
               />
             </div>
             <div>

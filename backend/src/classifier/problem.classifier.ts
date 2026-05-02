@@ -18,6 +18,7 @@ import {
   SharedState,
   SharedAnalyzerResult,
   SharedSearcherResult,
+  SharedTriageResult,
 } from '../agents/core/shared-state';
 
 /**
@@ -40,17 +41,50 @@ export class ProblemClassifier {
     const shared = SharedState.from(context);
     const analyzerResult: Partial<SharedAnalyzerResult> =
       shared.get('analyzerResult') ?? {};
+    const triage: SharedTriageResult | undefined = shared.get('triageResult');
 
     const lowerInput = input.toLowerCase();
     const keywords = analyzerResult.keywords || [];
 
-    // Rule 1: Detect Tech Issues (highest priority)
+    // Rule 1: Detect Tech Issues (highest priority).
+    //
+    // Two paths into TECH_ISSUE:
+    //   a) Strong keyword signal (>= 3 malfunction keywords -> 0.9+ raw
+    //      confidence > threshold).  This is the original lexical gate
+    //      and stays for inputs we got before L0 was wired through.
+    //   b) L0 triage labelled the topic as `product` AND we see at least
+    //      one malfunction keyword.  This is the "buy button doesn't
+    //      work" case: short, only 1-2 lexical hits, but L0 already
+    //      semantically nailed it as a product-area problem so we
+    //      shouldn't make the user clear an artificially high lexical
+    //      bar to reach Scenario C.  We boost confidence to a value
+    //      that comfortably clears the keyword threshold so downstream
+    //      logging sees a single source of truth.
     const techIssueResult = this.detectTechIssue(lowerInput, keywords);
+    const triageProductPrior =
+      triage?.inDomain === true &&
+      triage?.intent === 'question' &&
+      triage?.category === 'product' &&
+      techIssueResult.matchedKeywords.length >= 1;
+
     if (techIssueResult.confidence > 0.7) {
       return {
         type: ProblemType.TECH_ISSUE,
         confidence: techIssueResult.confidence,
-        reason: techIssueResult.reason,
+        reason: triageProductPrior
+          ? `${techIssueResult.reason} (triage=product reinforced)`
+          : techIssueResult.reason,
+        matchedKeywords: techIssueResult.matchedKeywords,
+      };
+    }
+    if (triageProductPrior) {
+      return {
+        type: ProblemType.TECH_ISSUE,
+        confidence: 0.85,
+        reason:
+          `Triage classified as 'product' question and ` +
+          `${techIssueResult.matchedKeywords.length} malfunction keyword(s) ` +
+          `present (${techIssueResult.matchedKeywords.join(', ')})`,
         matchedKeywords: techIssueResult.matchedKeywords,
       };
     }

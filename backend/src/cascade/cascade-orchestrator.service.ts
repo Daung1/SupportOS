@@ -43,7 +43,11 @@ import {
   ILogRepository,
   LOG_REPOSITORY,
 } from '../agents/orchestrator/ports/orchestrator-ports';
-import { SharedSafetyResult } from '../agents/core/shared-state';
+import {
+  SharedSafetyResult,
+  SharedState,
+  SharedTriageResult,
+} from '../agents/core/shared-state';
 import { ISessionContext } from '../agents/core/execution-context.interface';
 import { FAQMatcher, FAQMatchResult } from './faq.matcher';
 import { TriageResult, TriageService } from './triage.service';
@@ -280,6 +284,23 @@ export class CascadeOrchestrator {
       }
 
       // ------------------- Layer 3: MultiAgent ---------------------
+      // Seed L0 triage result onto shared state so downstream agents
+      // (in particular ProblemClassifier inside GeneratorAgent) can use
+      // the LLM-derived `category` and `intent` as a strong prior
+      // instead of re-deriving them via brittle keyword heuristics.
+      // The fields we pass through are the structural shape declared
+      // in SharedTriageResult (kept aligned with TriageResult).
+      const sharedTriage: SharedTriageResult = {
+        inDomain: triage.inDomain,
+        intent: triage.intent,
+        category: triage.category,
+        confidence: triage.confidence,
+        reformulated: triage.reformulated,
+        reason: triage.reason,
+        degraded: triage.degraded,
+      };
+      SharedState.from(context).set('triageResult', sharedTriage);
+
       this.appendLog({
         ...logCtx,
         type: 'cascade.level3_entry',
