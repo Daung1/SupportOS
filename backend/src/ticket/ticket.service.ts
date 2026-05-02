@@ -9,10 +9,14 @@ import {
   ConcurrentOrchestrator,
   ConcurrentTaskResult,
 } from '../queue/concurrent-orchestrator.service';
-import { CascadeResult } from '../cascade/cascade-orchestrator.service';
+import {
+  CascadeOrchestrator,
+  CascadeResult,
+} from '../cascade/cascade-orchestrator.service';
 import { TicketRepository, TicketWithRelations } from './ticket.repository';
 import { UserService } from '../user/user.service';
 import { CreateTicketDto } from './dto/create-ticket.dto';
+import { SessionContextFactory } from '../queue/session-context.factory';
 
 @Injectable()
 export class TicketService {
@@ -21,6 +25,8 @@ export class TicketService {
   constructor(
     private readonly ticketRepository: TicketRepository,
     private readonly concurrentOrchestrator: ConcurrentOrchestrator,
+    private readonly cascadeOrchestrator: CascadeOrchestrator,
+    private readonly sessionContextFactory: SessionContextFactory,
     private readonly userService: UserService,
   ) {}
 
@@ -50,6 +56,65 @@ export class TicketService {
       items.map((dto) => this.create(dto)),
     );
     return created;
+  }
+
+  /**
+   * Quick answer mode: only check L1 (FAQ) and L2 (SimpleFilter),
+   * do NOT run L3 (MultiAgent). Returns either an answer or a flag
+   * indicating the user needs to generate a full ticket for deep analysis.
+   */
+  async quickAnswer(question: string, userId?: string) {
+    try {
+      // resolveOptional already returns the canonical user id (or null)
+      const resolvedUserId = userId
+        ? await this.userService.resolveOptional(userId)
+        : null;
+
+      // Build a minimal session context for cascade processing.
+      // We don't persist a Ticket row for quick-answer flow, so the id
+      // is a synthetic "qa-..." marker only used for logs/metadata.
+      const quickAnswerId = `qa-${Date.now()}`;
+      const context = this.sessionContextFactory.build({
+        id: quickAnswerId,
+        content: question,
+        sessionId: quickAnswerId,
+        metadata: {
+          userId: resolvedUserId ?? 'anonymous',
+          source: 'quick-answer',
+        },
+      });
+
+      // Run cascade with skipLevel3 = true
+      const result = await this.cascadeOrchestrator.processTicket(
+        context,
+        true, // skipLevel3
+      );
+
+      return {
+        success: result.level === 1 || result.level === 2,
+        level: result.level as 0 | 1 | 2,
+        source: result.source,
+        answer: result.level > 0 ? result.answer : undefined,
+        category: result.category,
+        confidence: result.confidence,
+        requiresTicket: result.level === 0,
+        message:
+          result.level === 0
+            ? 'No quick answer found. Please generate a ticket for AI-powered deep analysis.'
+            : undefined,
+      };
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      this.logger.error(`Quick answer failed: ${message}`);
+      return {
+        success: false,
+        level: 0 as const,
+        source: 'Error',
+        requiresTicket: true,
+        message: 'Quick answer failed. Please generate a ticket.',
+        error: message,
+      };
+    }
   }
 
   async list(

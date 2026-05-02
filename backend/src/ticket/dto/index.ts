@@ -5,3 +5,4 @@ export { ChatWithAiDto } from './chat-with-ai.dto';
 export { CreateTicketDto } from './create-ticket.dto';
 export { ListTicketsQueryDto } from './list-tickets-query.dto';
 export { RejectTicketDto } from './reject-ticket.dto';
+export { QuickAnswerDto, QuickAnswerResponse } from './quick-answer.dto';

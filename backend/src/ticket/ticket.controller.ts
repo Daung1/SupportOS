@@ -26,6 +26,8 @@ import {
   CreateTicketDto,
   ListTicketsQueryDto,
   RejectTicketDto,
+  QuickAnswerDto,
+  QuickAnswerResponse,
 } from './dto';
 import { Ticket } from '@prisma/client';
 
@@ -54,6 +56,18 @@ export class TicketController {
   })
   createBatch(@Body() dto: BatchCreateTicketsDto): Promise<Ticket[]> {
     return this.ticketService.createBatch(dto.items);
+  }
+
+  @Post('chat/answer')
+  @HttpCode(HttpStatus.OK)
+  @ApiOperation({
+    summary: 'Quick answer from FAQ/Rules (L1/L2 only, no deep analysis)',
+    description:
+      'Attempts to answer user question from FAQ and rule-based filters. If no answer found, returns flag to generate ticket for L3 analysis.',
+  })
+  @ApiOkResponse({ description: 'Quick answer attempt result' })
+  async quickAnswer(@Body() dto: QuickAnswerDto): Promise<QuickAnswerResponse> {
+    return this.ticketService.quickAnswer(dto.question, dto.userId);
   }
 
   @Get()

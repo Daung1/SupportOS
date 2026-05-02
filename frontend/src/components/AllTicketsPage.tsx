@@ -3,7 +3,7 @@ import { useTickets, useUsers } from '../hooks/useSWRApi';
 import { ProblemType, User } from '../types';
 import { TicketAnalysisCard } from './TicketAnalysisCard';
 
-interface SupporterDashboardProps {
+interface AllTicketsPageProps {
   currentUser: User;
   onSelectTicket?: (ticketId: string) => void;
   onApproveTicket?: (ticketId: string) => void;
@@ -12,26 +12,34 @@ interface SupporterDashboardProps {
 
 type FilterType = 'all' | ProblemType;
 type FilterUser = 'all' | string;
+type ViewScope = 'unassigned' | 'all';
 
-export const SupporterDashboard: React.FC<SupporterDashboardProps> = ({
+export const AllTicketsPage: React.FC<AllTicketsPageProps> = ({
   currentUser,
   onSelectTicket,
   onApproveTicket,
   onRejectTicket,
 }) => {
+  const [viewScope, setViewScope] = useState<ViewScope>('unassigned');
   const [filterType, setFilterType] = useState<FilterType>('all');
   const [filterStatus, setFilterStatus] = useState<'all' | 'processed' | 'pending'>('all');
   const [filterUserId, setFilterUserId] = useState<FilterUser>('all');
+  // Fine-grained filter for "All Tickets" view.
+  // Values: '' = no filter | 'none' = unassigned | <supporterId>.
+  const [filterAssigneeId, setFilterAssigneeId] = useState<string>('');
   const [page, setPage] = useState(1);
   const [limit] = useState(10);
 
   const { users: submittingUsers } = useUsers('user');
   const { users: supporterUsers } = useUsers('supporter');
 
-  // Always show tickets assigned to current user (My Queue)
+  // Translate the view scope (and optional Assigned-To filter when scope is "all")
+  // into the backend query param. The backend treats the literal "none" as "unassigned only".
   const assigneeIdParam = useMemo<string | undefined>(() => {
-    return currentUser.id;
-  }, [currentUser.id]);
+    if (viewScope === 'unassigned') return 'none';
+    // scope === 'all'
+    return filterAssigneeId === '' ? undefined : filterAssigneeId;
+  }, [viewScope, filterAssigneeId]);
 
   const { tickets, total, pages, isLoading, error, mutate } = useTickets(
     {
@@ -51,11 +59,6 @@ export const SupporterDashboard: React.FC<SupporterDashboardProps> = ({
     );
   };
 
-  // Filter tickets by type / status. Tickets without analysis (still
-  // processing) are kept in the list when "All Types" is selected so
-  // supporters can still assign / delete them. They're hidden when a
-  // specific Problem Type is requested, since type is unknown until
-  // analysis completes.
   const filteredTickets = (tickets?.filter((ticket) => {
     const analysis = ticket.analysis as any;
 
@@ -81,23 +84,71 @@ export const SupporterDashboard: React.FC<SupporterDashboardProps> = ({
     return (analysis?.confidence ?? analysis?.classification?.confidence ?? 0) * 100;
   };
 
+  const scopeLabel = useMemo(() => {
+    if (viewScope === 'unassigned') return 'Unassigned';
+    if (filterAssigneeId === '') return 'All Tickets';
+    if (filterAssigneeId === 'none') return 'All Tickets · Unassigned';
+    const target = supporterUsers.find((s) => s.id === filterAssigneeId);
+    return target
+      ? `All Tickets · Assigned to ${target.name}`
+      : 'All Tickets';
+  }, [viewScope, filterAssigneeId, supporterUsers]);
+
   return (
     <div className="space-y-6">
       {/* Header */}
       <div className="bg-white rounded-lg shadow-md p-6">
         <h2 className="text-3xl font-bold text-gray-900 mb-2">
-          📥 My Queue
+          📚 All Tickets
         </h2>
         <p className="text-gray-600">
-          Review and approve support tickets assigned to you
+          Browse and manage all support tickets
+          <span className="ml-2 text-sm text-gray-500">
+            · Currently viewing:{' '}
+            <span className="font-medium text-gray-700">{scopeLabel}</span>
+          </span>
         </p>
+      </div>
+
+      {/* View scope tabs */}
+      <div className="bg-white rounded-lg shadow-md p-3">
+        <p className="text-xs text-gray-500 mb-2">
+          View tickets:
+        </p>
+        <div className="flex flex-wrap gap-1">
+          {(
+            [
+              { key: 'unassigned', label: '🆕 Unassigned' },
+              { key: 'all', label: '🔍 All Tickets' },
+            ] as const
+          ).map((tab) => (
+            <button
+              key={tab.key}
+              onClick={() => {
+                setViewScope(tab.key);
+                if (tab.key !== 'all') {
+                  // Reset the per-supporter filter
+                  setFilterAssigneeId('');
+                }
+                setPage(1);
+              }}
+              className={`px-4 py-2 rounded-lg font-medium text-sm transition-colors ${
+                viewScope === tab.key
+                  ? 'bg-blue-600 text-white'
+                  : 'text-gray-700 hover:bg-gray-100'
+              }`}
+            >
+              {tab.label}
+            </button>
+          ))}
+        </div>
       </div>
 
       {/* Stats */}
       <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
         <div className="bg-blue-50 rounded-lg p-4 border border-blue-200">
           <h3 className="text-sm font-medium text-blue-900">
-            Tickets in queue
+            Tickets in view
           </h3>
           <p className="text-3xl font-bold text-blue-600 mt-2">{total}</p>
         </div>
@@ -108,9 +159,9 @@ export const SupporterDashboard: React.FC<SupporterDashboardProps> = ({
           </p>
         </div>
         <div className="bg-purple-50 rounded-lg p-4 border border-purple-200">
-          <h3 className="text-sm font-medium text-purple-900">Processed</h3>
+          <h3 className="text-sm font-medium text-purple-900">Assigned to me</h3>
           <p className="text-3xl font-bold text-purple-600 mt-2">
-            {tickets?.filter((t) => t.approvalStatus !== 'pending').length ?? 0}
+            {tickets?.filter((t) => t.assigneeId === currentUser.id).length ?? 0}
           </p>
         </div>
         <div className="bg-orange-50 rounded-lg p-4 border border-orange-200">
@@ -198,8 +249,35 @@ export const SupporterDashboard: React.FC<SupporterDashboardProps> = ({
             </select>
           </div>
 
-          {/* Empty column for grid alignment */}
-          <div></div>
+          {/* Assignee Filter — only meaningful when scope is "All Tickets".
+              Disabled in Unassigned view with a hint. */}
+          <div>
+            <label className="block text-sm font-medium text-gray-700 mb-2">
+              Assigned To
+              {viewScope !== 'all' && (
+                <span className="ml-1 text-xs text-gray-400 font-normal">
+                  (switch to "All Tickets" to use)
+                </span>
+              )}
+            </label>
+            <select
+              value={filterAssigneeId}
+              onChange={(e) => {
+                setFilterAssigneeId(e.target.value);
+                setPage(1);
+              }}
+              disabled={viewScope !== 'all'}
+              className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 disabled:bg-gray-100 disabled:text-gray-400"
+            >
+              <option value="">Anyone</option>
+              <option value="none">— Unassigned —</option>
+              {supporterUsers.map((s) => (
+                <option key={s.id} value={s.id}>
+                  {s.id === currentUser.id ? `${s.name} (me)` : s.name}
+                </option>
+              ))}
+            </select>
+          </div>
         </div>
       </div>
 
@@ -215,10 +293,7 @@ export const SupporterDashboard: React.FC<SupporterDashboardProps> = ({
           </div>
         ) : filteredTickets.length === 0 ? (
           <div className="text-center py-12 text-gray-500">
-            <p className="text-lg">No tickets in your queue</p>
-            <p className="text-sm mt-2">
-              Visit <strong>All Tickets</strong> to find unassigned tickets to claim.
-            </p>
+            <p className="text-lg">No tickets found in this view</p>
           </div>
         ) : (
           <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">

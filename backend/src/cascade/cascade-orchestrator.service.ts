@@ -96,7 +96,10 @@ export class CascadeOrchestrator {
   // Public entry points
   // ---------------------------------------------------------------------------
 
-  async processTicket(context: ISessionContext): Promise<CascadeResult> {
+  async processTicket(
+    context: ISessionContext,
+    skipLevel3 = false,
+  ): Promise<CascadeResult> {
     const startedAt = Date.now();
     const ticketText = context.input ?? '';
     const logCtx = this.logContextFrom(context);
@@ -168,6 +171,32 @@ export class CascadeOrchestrator {
           reason: filterResult.reason,
         },
       });
+
+      // If skipLevel3 is true, return early without running MultiAgent
+      if (skipLevel3) {
+        this.appendLog({
+          ...logCtx,
+          type: 'cascade.level3_skipped',
+          timestamp: Date.now(),
+          payload: { reason: 'Quick answer mode - L1/L2 insufficient' },
+        });
+        this.appendLog({
+          ...logCtx,
+          type: 'cascade.end',
+          timestamp: Date.now(),
+          payload: { level: 0, success: false, requiresLevel3: true },
+        });
+        return {
+          level: 0,
+          source: 'Error',
+          success: false,
+          category: 'requires_deep_analysis',
+          answer: '',
+          confidence: 0,
+          processingTimeMs: Date.now() - startedAt,
+          error: 'No quick answer found. Please generate a ticket for deep analysis.',
+        };
+      }
 
       // ------------------- Layer 3: MultiAgent -------------------
       this.appendLog({

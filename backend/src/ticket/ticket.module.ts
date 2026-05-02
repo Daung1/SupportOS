@@ -1,4 +1,5 @@
 import { Module } from '@nestjs/common';
+import { CascadeModule } from '../cascade/cascade.module';
 import { DatabaseModule } from '../database/database.module';
 import { QueueModule } from '../queue/queue.module';
 import { SocketModule } from '../socket/socket.module';
@@ -8,7 +9,13 @@ import { TicketRepository } from './ticket.repository';
 import { TicketService } from './ticket.service';
 
 @Module({
-  imports: [DatabaseModule, QueueModule, SocketModule, UserModule],
+  imports: [
+    DatabaseModule,
+    QueueModule,
+    SocketModule,
+    UserModule,
+    CascadeModule,
+  ],
   controllers: [TicketController],
   providers: [TicketRepository, TicketService],
   exports: [TicketService, TicketRepository],

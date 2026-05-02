@@ -3,11 +3,12 @@ import {
   TicketDetail,
   ChatBox,
   SupporterDashboard,
+  AllTicketsPage,
 } from './components';
 import { useUsers } from './hooks/useSWRApi';
 import { User } from './types';
 
-type View = 'dashboard' | 'detail';
+type View = 'dashboard' | 'all-tickets' | 'detail';
 
 const STORAGE_KEY_USER_ID = 'supportos-current-user-id';
 
@@ -151,6 +152,17 @@ function App() {
               >
                 Dashboard
               </button>
+
+              <button
+                onClick={() => setCurrentView('all-tickets')}
+                className={`px-4 py-2 rounded-lg font-medium transition-colors ${
+                  currentView === 'all-tickets'
+                    ? 'bg-blue-600 text-white'
+                    : 'text-gray-700 hover:bg-gray-100'
+                }`}
+              >
+                All Tickets
+              </button>
             </div>
           </div>
         </div>
@@ -206,6 +218,21 @@ function App() {
           <>
             {currentView === 'dashboard' && (
               <SupporterDashboard
+                currentUser={currentUser}
+                onSelectTicket={handleSelectTicket}
+                onApproveTicket={(ticketId) => {
+                  alert(`Approved: ${ticketId}`);
+                  handleBack();
+                }}
+                onRejectTicket={(ticketId, reason) => {
+                  alert(`Rejected: ${ticketId}\nReason: ${reason}`);
+                  handleBack();
+                }}
+              />
+            )}
+
+            {currentView === 'all-tickets' && (
+              <AllTicketsPage
                 currentUser={currentUser}
                 onSelectTicket={handleSelectTicket}
                 onApproveTicket={(ticketId) => {

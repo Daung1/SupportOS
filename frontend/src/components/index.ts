@@ -10,3 +10,4 @@ export { LogViewer } from './LogViewer';
 export { ChatBox } from './ChatBox';
 export { TicketAnalysisCard } from './TicketAnalysisCard';
 export { SupporterDashboard } from './SupporterDashboard';
+export { AllTicketsPage } from './AllTicketsPage';

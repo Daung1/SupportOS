@@ -36,6 +36,8 @@ export const TicketAnalysisCard: React.FC<TicketAnalysisCardProps> = ({
   const { assign, isLoading: assigning } = useAssignTicket();
   const { remove, isLoading: deleting } = useDeleteTicket();
   const [actionError, setActionError] = useState<string | null>(null);
+  const [actionSuccess, setActionSuccess] = useState<string | null>(null);
+  const [showDeleteConfirm, setShowDeleteConfirm] = useState(false);
 
   // Rendering style is driven by analysis. When the cascade hasn't produced
   // analysis yet (status pending/processing/dlq without a result), we still
@@ -115,8 +117,15 @@ export const TicketAnalysisCard: React.FC<TicketAnalysisCardProps> = ({
 
   const runAssign = async (assigneeId: string | null) => {
     setActionError(null);
+    setActionSuccess(null);
     try {
       await assign({ ticketId: ticket.id, assigneeId });
+      setActionSuccess(
+        assigneeId 
+          ? `Assigned to ${ticket.assignee?.name ?? 'supporter'}`
+          : 'Unassigned successfully'
+      );
+      setTimeout(() => setActionSuccess(null), 3000);
       onMutate?.();
     } catch (err) {
       setActionError(
@@ -126,16 +135,13 @@ export const TicketAnalysisCard: React.FC<TicketAnalysisCardProps> = ({
   };
 
   const runDelete = async () => {
-    if (
-      !window.confirm(
-        `Delete ticket #${ticket.id.slice(0, 8)}? This will remove its logs and token-usage rows. This cannot be undone.`,
-      )
-    ) {
-      return;
-    }
     setActionError(null);
+    setActionSuccess(null);
     try {
       await remove({ ticketId: ticket.id });
+      setShowDeleteConfirm(false);
+      setActionSuccess('Ticket deleted successfully');
+      setTimeout(() => setActionSuccess(null), 3000);
       onMutate?.();
     } catch (err) {
       setActionError(
@@ -186,7 +192,7 @@ export const TicketAnalysisCard: React.FC<TicketAnalysisCardProps> = ({
               )}
             </div>
             <button
-              onClick={runDelete}
+              onClick={() => setShowDeleteConfirm(true)}
               disabled={deleting}
               title="Delete ticket"
               className="px-2 py-1 text-xs rounded bg-white border border-red-300 text-red-600 hover:bg-red-50 disabled:opacity-50"
@@ -241,6 +247,12 @@ export const TicketAnalysisCard: React.FC<TicketAnalysisCardProps> = ({
         {actionError && (
           <div className="bg-red-50 border border-red-200 text-red-700 text-xs px-2 py-1 rounded">
             {actionError}
+          </div>
+        )}
+
+        {actionSuccess && (
+          <div className="bg-green-50 border border-green-200 text-green-700 text-xs px-2 py-1 rounded">
+            ✓ {actionSuccess}
           </div>
         )}
 
@@ -362,6 +374,47 @@ export const TicketAnalysisCard: React.FC<TicketAnalysisCardProps> = ({
           )}
         </div>
       </div>
+
+      {/* Delete Confirmation Modal */}
+      {showDeleteConfirm && (
+        <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50 p-4">
+          <div className="bg-white rounded-lg shadow-lg max-w-md w-full p-6 space-y-4">
+            <div>
+              <h3 className="text-lg font-bold text-gray-900">Delete Ticket?</h3>
+              <p className="text-sm text-gray-600 mt-2">
+                This will permanently delete ticket <span className="font-mono font-semibold">#{ticket.id.slice(0, 8)}</span> and all related data.
+              </p>
+            </div>
+
+            <div className="bg-red-50 border border-red-200 rounded p-3 text-sm text-red-700 space-y-1">
+              <p className="font-medium">This action will remove:</p>
+              <ul className="list-disc list-inside text-xs space-y-1">
+                <li>Ticket record</li>
+                <li>All AI analysis logs</li>
+                <li>Token usage history</li>
+              </ul>
+              <p className="font-medium text-red-800 mt-2">This cannot be undone.</p>
+            </div>
+
+            <div className="flex gap-3 pt-2">
+              <button
+                onClick={() => setShowDeleteConfirm(false)}
+                disabled={deleting}
+                className="flex-1 px-4 py-2 bg-gray-200 text-gray-900 rounded-lg hover:bg-gray-300 font-medium text-sm disabled:opacity-50"
+              >
+                Cancel
+              </button>
+              <button
+                onClick={runDelete}
+                disabled={deleting}
+                className="flex-1 px-4 py-2 bg-red-600 text-white rounded-lg hover:bg-red-700 font-medium text-sm disabled:opacity-50"
+              >
+                {deleting ? 'Deleting…' : 'Delete Ticket'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 };
