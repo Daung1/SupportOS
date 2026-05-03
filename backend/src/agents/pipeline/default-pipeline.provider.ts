@@ -100,12 +100,29 @@ export class DefaultPipelineProvider implements IPipelineProvider {
           id: DEFAULT_PIPELINE_ROUTES.analyzer,
           agent: this.analyzerAgent,
           publishAs: 'analyzerResult',
-          // Analyzer is the contract source for downstream routing
-          // (problem classification, scenario selection). If it fails
-          // we genuinely have nothing useful to give Generator, so
-          // abort. This is the orchestrator default; we set it
-          // explicitly for documentation.
-          failurePolicy: 'abort',
+          // Analyzer is the *preferred* signal for downstream routing,
+          // but it's no longer load-bearing. AnalyzerAgent now self-
+          // terminates with the deterministic text_analyzer tool
+          // output even when Gemini misbehaves, so genuine failures
+          // here are rare. When they do happen (timeout, repeated
+          // 503, etc.) we'd rather let the pipeline continue and let
+          // ProblemClassifier route based on triage signals
+          // (intent=question + category=product + tech keywords ->
+          // Scenario C TECH_ISSUE) than abort the whole ticket and
+          // surface a generic "AI processing did not complete" panel
+          // to the customer-support staff. The fallback is shaped to
+          // match SharedAnalyzerResult: empty keywords + neutral
+          // sentiment so classifier stays conservative.
+          failurePolicy: 'continue',
+          fallbackOutput: {
+            category: 'other',
+            priority: 'medium',
+            keywords: [],
+            sentiment: 'neutral',
+            confidence: 0,
+            summary:
+              'Analyzer unavailable; downstream agents proceeding without analyzer signals.',
+          },
         },
         {
           id: DEFAULT_PIPELINE_ROUTES.searcher,

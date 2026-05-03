@@ -28,15 +28,43 @@ export class AnalyzerAgent extends BaseAgent {
     'Analyzes ticket content and extracts key information for routing and response generation';
 
   /**
+   * Maximum number of LLM-driven iterations before we self-terminate
+   * with whatever deterministic tool output we've already collected.
+   *
+   * The system prompt instructs Gemini to finish in 2 iterations
+   * (call text_analyzer once, then FINISH). If the model returns
+   * unparseable text, repeats `ACTION: text_analyzer`, or otherwise
+   * fails to emit a recognisable FINISH, this agent could otherwise
+   * loop until BaseAgent.MAX_ITERATIONS (10) and surface a user-
+   * visible "Max iterations reached" error - even though we already
+   * have a perfectly usable analysis from the deterministic tool on
+   * iteration 0. Bound the LLM calls and fall back instead.
+   */
+  private static readonly MAX_LLM_ITERATIONS = 2;
+
+  /**
    * STEP 1: THINK - Generate thoughts about the ticket
    * Let Gemini analyze the ticket and decide what to do
    * Possible actions: use text_analyzer tool or finish with analysis
+   *
+   * Self-termination: once we've reached MAX_LLM_ITERATIONS and we
+   * have at least one successful tool observation, we synthesize a
+   * FINISH thought directly from the tool output instead of asking
+   * Gemini again. This guarantees the agent always terminates in a
+   * bounded number of LLM calls and never bubbles up the generic
+   * "Max iterations reached" error to the user.
    */
   protected async think(
     context: ISessionContext,
     history: TAOIteration[],
   ): Promise<string> {
-    // important: we will only keep the last iteration in the prompt to save tokens
+    if (history.length >= AnalyzerAgent.MAX_LLM_ITERATIONS) {
+      const synthesized = this.synthesizeFinishFromHistory(history);
+      if (synthesized) {
+        return synthesized;
+      }
+    }
+
     const systemPrompt = `TASK: Analyze this support ticket: "${context.input}"
 
 YOU MUST RESPOND USING EXACTLY THIS FORMAT (no extra text allowed):
@@ -251,5 +279,49 @@ IMPORTANT:
       success: false,
       error: `Unknown action type: ${action.type}`,
     };
+  }
+
+  /**
+   * Build a synthetic `THOUGHT/ACTION: FINISH` response from the most
+   * recent successful text_analyzer tool observation in history. This
+   * lets us terminate the TAO loop deterministically when Gemini fails
+   * to follow the 2-iteration contract.
+   *
+   * Returns `null` if no usable tool result is available; the caller
+   * will then fall back to the normal LLM path.
+   */
+  private synthesizeFinishFromHistory(
+    history: TAOIteration[],
+  ): string | null {
+    for (let i = history.length - 1; i >= 0; i--) {
+      const iter = history[i];
+      const obs = iter.observation;
+      const out = obs?.output;
+      if (!obs?.success || !out || typeof out !== 'object') {
+        continue;
+      }
+      // Tool output shape comes from TextAnalyzerTool: contains
+      // category/priority/keywords/sentiment at minimum.
+      if (!('category' in out) && !('priority' in out)) {
+        continue;
+      }
+      const synthesized = {
+        category: (out as any).category ?? 'other',
+        priority: (out as any).priority ?? 'medium',
+        keywords: Array.isArray((out as any).keywords)
+          ? (out as any).keywords
+          : [],
+        sentiment: (out as any).sentiment ?? 'neutral',
+        hasOrderNumber: Boolean((out as any).hasOrderNumber),
+        hasSpecificInfo: Boolean((out as any).hasSpecificInfo),
+      };
+      return [
+        'THOUGHT: LLM did not converge within the iteration budget; ' +
+          'falling back to the deterministic text_analyzer output.',
+        'ACTION: FINISH',
+        JSON.stringify(synthesized),
+      ].join('\n');
+    }
+    return null;
   }
 }

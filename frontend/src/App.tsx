@@ -14,6 +14,12 @@ const STORAGE_KEY_USER_ID = 'supportos-current-user-id';
 
 function App() {
   const [currentView, setCurrentView] = useState<View>('dashboard');
+  // Remember which view the user was on before they drilled into a
+  // detail page. The "← Back" button in detail view returns here so
+  // supporters who came from the All Tickets page don't bounce back
+  // to the (possibly unrelated) Dashboard. Falls back to 'dashboard'
+  // when the user opened a detail directly via deep-link.
+  const [previousView, setPreviousView] = useState<View>('dashboard');
   const [selectedTicketId, setSelectedTicketId] = useState<string | null>(null);
   const [successMessage, setSuccessMessage] = useState<string>('');
 
@@ -61,12 +67,18 @@ function App() {
   };
 
   const handleSelectTicket = (ticketId: string) => {
+    // Snapshot where we were so "← Back" can land the user back on
+    // the same list (Dashboard / My Queue / All Tickets) instead of
+    // always bouncing them to the home dashboard.
+    if (currentView !== 'detail') {
+      setPreviousView(currentView);
+    }
     setSelectedTicketId(ticketId);
     setCurrentView('detail');
   };
 
   const handleBack = () => {
-    setCurrentView('dashboard');
+    setCurrentView(previousView);
     setSelectedTicketId(null);
   };
 
@@ -75,6 +87,7 @@ function App() {
   const handleSwitchUser = (id: string) => {
     setCurrentUserId(id);
     setCurrentView('dashboard');
+    setPreviousView('dashboard');
     setSelectedTicketId(null);
   };
 
@@ -85,6 +98,10 @@ function App() {
     const supporterAccounts = users.filter((u) => u.role === 'supporter');
     return { userAccounts, supporterAccounts };
   }, [users]);
+
+  // List of supporters drives the assignment dropdown that now lives
+  // inside TicketDetail too. Only meaningful in supporter mode.
+  const supporterAccounts = groupedUsers.supporterAccounts;
 
   return (
     <div className="min-h-screen bg-gray-100">
@@ -204,7 +221,7 @@ function App() {
                   onClick={handleBack}
                   className="mb-4 px-4 py-2 bg-gray-200 text-gray-900 rounded-lg hover:bg-gray-300 font-medium"
                 >
-                  ← Back to Dashboard
+                  ← Back
                 </button>
                 <TicketDetail
                   ticketId={selectedTicketId}
@@ -252,11 +269,13 @@ function App() {
                   onClick={handleBack}
                   className="mb-4 px-4 py-2 bg-gray-200 text-gray-900 rounded-lg hover:bg-gray-300 font-medium"
                 >
-                  ← Back to Dashboard
+                  ← Back
                 </button>
                 <TicketDetail
                   ticketId={selectedTicketId}
                   onBack={handleBack}
+                  currentSupporter={currentUser}
+                  supporters={supporterAccounts}
                 />
               </div>
             )}

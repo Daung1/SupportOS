@@ -31,15 +31,40 @@ export class SearcherAgent extends BaseAgent {
     'Searches knowledge base for relevant documents related to customer support tickets using TAO Loop';
 
   /**
+   * Maximum number of `search` tool calls before we self-terminate
+   * with whatever results we've already gathered.
+   *
+   * The system prompt suggests 2-3 iterations is enough, but Gemini
+   * sometimes keeps proposing new queries when the KB has nothing to
+   * offer (e.g. niche product issues like "buy button doesn't work").
+   * Without this cap the agent would loop until BaseAgent's hard limit
+   * (10) and surface "Max iterations reached" to the user. We instead
+   * force a graceful FINISH using the best results we've seen so far -
+   * Generator can still classify the ticket from triage + analyzer
+   * signals even if Searcher returns zero documents.
+   */
+  private static readonly MAX_SEARCH_ITERATIONS = 3;
+
+  /**
    * STEP 1: THINK - Generate thoughts about what to search
    * Let Gemini analyze the ticket and decide what search queries to use
    * Possible actions: use search tool or finish with results
+   *
+   * Self-termination: once we've issued MAX_SEARCH_ITERATIONS search
+   * tool calls we stop asking Gemini and synthesize a FINISH thought
+   * directly. This bounds LLM cost and guarantees the loop terminates.
    */
   protected async think(
     context: ISessionContext,
     history: TAOIteration[],
   ): Promise<string> {
-    // Phase 1 optimization: Simplified system prompt (~150 tokens instead of 250)
+    const completedSearches = history.filter(
+      (h) => h.action?.type === 'CALL_TOOL' && h.observation?.success,
+    ).length;
+    if (completedSearches >= SearcherAgent.MAX_SEARCH_ITERATIONS) {
+      return this.synthesizeFinishFromHistory(history);
+    }
+
     const systemPrompt = `Search documents for support query: "${context.input}"
 
 RESPOND FORMAT (exactly):
@@ -274,5 +299,37 @@ Continue searching or finish?`;
       success: false,
       error: `Unknown action type: ${action.type}`,
     };
+  }
+
+  /**
+   * Build a synthetic `THOUGHT/ACTION: FINISH` response using the best
+   * search observation seen so far. This is the bail-out when Gemini
+   * keeps proposing new queries past MAX_SEARCH_ITERATIONS.
+   */
+  private synthesizeFinishFromHistory(history: TAOIteration[]): string {
+    let bestCount = 0;
+    let bestSummary = 'Search budget exhausted; returning best-effort results.';
+    for (let i = history.length - 1; i >= 0; i--) {
+      const obs = history[i].observation;
+      const out = obs?.output;
+      if (!obs?.success || !out || typeof out !== 'object') continue;
+      const count = typeof (out as any).count === 'number'
+        ? (out as any).count
+        : Array.isArray((out as any).results)
+          ? (out as any).results.length
+          : 0;
+      if (count > bestCount) {
+        bestCount = count;
+        bestSummary =
+          `Found ${count} document(s) across ${history.length} attempt(s); ` +
+          `stopping further searches.`;
+      }
+    }
+    return [
+      'THOUGHT: Search iteration budget reached; finishing with the best results so far.',
+      'ACTION: FINISH',
+      `SUMMARY: ${bestSummary}`,
+      `RELEVANT_DOCS: ${bestCount}`,
+    ].join('\n');
   }
 }
