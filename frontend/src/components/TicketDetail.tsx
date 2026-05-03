@@ -4,14 +4,15 @@ import {
   useTicketLogs,
   useTokenUsage,
   useAssignTicket,
+  useChatWithAI,
 } from '../hooks/useSWRApi';
 import { useTicketStream } from '../hooks/useTicketStream';
 import { AgentTracer } from './AgentTracer';
 import { AIResponse } from './AIResponse';
 import { SafetyIndicator } from './SafetyIndicator';
 import { TokenCost } from './TokenCost';
-import { ApprovalPanel } from './ApprovalPanel';
 import { LogViewer } from './LogViewer';
+import { PipelineTrace } from './PipelineTrace';
 import { GeneratorOutputType, ProblemType, User } from '../types';
 
 interface TicketDetailProps {
@@ -34,14 +35,20 @@ export const TicketDetail: React.FC<TicketDetailProps> = ({
   supporters = [],
 }) => {
   const [tab, setTab] = useState<
-    'overview' | 'response' | 'approval' | 'logs' | 'cost'
+    'overview' | 'response' | 'pipeline' | 'logs' | 'cost'
   >('overview');
   const [refresh, setRefresh] = useState(0);
   const [assignError, setAssignError] = useState<string | null>(null);
   const [assignSuccess, setAssignSuccess] = useState<string | null>(null);
+  const [showChat, setShowChat] = useState(false);
+  const [chatMessage, setChatMessage] = useState('');
+  const [chatError, setChatError] = useState<string | null>(null);
+  const [isSending, setIsSending] = useState(false);
+  const [sendSuccess, setSendSuccess] = useState(false);
 
   const { ticket, logs, tokenUsage, iterations, isLoading, mutate } =
     useTicket(ticketId);
+  const { chat, isLoading: isChating } = useChatWithAI();
 
   const { logs: logsData, isLoading: logsLoading } = useTicketLogs(ticketId);
   const { tokenUsage: tokenUsageData, isLoading: costLoading } =
@@ -62,7 +69,7 @@ export const TicketDetail: React.FC<TicketDetailProps> = ({
   const tabButtons = [
     { id: 'overview', label: 'Overview' },
     { id: 'response', label: 'Response' },
-    { id: 'approval', label: 'Approval' },
+    { id: 'pipeline', label: '🔍 Pipeline' },
     { id: 'logs', label: 'Audit Logs' },
     { id: 'cost', label: 'Token Cost' },
   ] as const;
@@ -70,6 +77,30 @@ export const TicketDetail: React.FC<TicketDetailProps> = ({
   const handleRefresh = () => {
     mutate();
     setRefresh((r) => r + 1);
+  };
+
+  const handleChat = async () => {
+    if (!chatMessage.trim()) return;
+    setChatError(null);
+    try {
+      await chat({ ticketId, data: { message: chatMessage } });
+      setChatMessage('');
+      setShowChat(false);
+      mutate();
+    } catch (err) {
+      setChatError(err instanceof Error ? err.message : 'Chat failed');
+    }
+  };
+
+  const handleSendToUser = async () => {
+    setIsSending(true);
+    try {
+      // Placeholder: replace with real send API when available
+      await new Promise((resolve) => setTimeout(resolve, 800));
+      setSendSuccess(true);
+    } finally {
+      setIsSending(false);
+    }
   };
 
   const runAssign = async (assigneeId: string | null) => {
@@ -339,6 +370,7 @@ export const TicketDetail: React.FC<TicketDetailProps> = ({
                   streamState.isConnected &&
                   ticket.status === 'processing'
                 }
+                searchResults={(ticket.analysis as any)?.searchResults}
               />
             </div>
             <div>
@@ -354,7 +386,7 @@ export const TicketDetail: React.FC<TicketDetailProps> = ({
           </div>
         )}
 
-        {/* Response & Approval */}
+        {/* Response */}
         {tab === 'response' && (
           <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
             <div className="lg:col-span-2">
@@ -366,8 +398,23 @@ export const TicketDetail: React.FC<TicketDetailProps> = ({
                 failureReason={
                   (ticket.analysis as any)?.error as string | undefined
                 }
+                searchResults={(ticket.analysis as any)?.searchResults}
+                emailFormat
+                userName={ticket.user?.name}
+                userEmail={ticket.user?.email}
+                showChat={showChat}
+                chatMessage={chatMessage}
+                onChatToggle={() => { setShowChat(!showChat); setChatError(null); }}
+                onChatMessageChange={setChatMessage}
+                onSendChat={handleChat}
+                isChatLoading={isChating}
+                chatError={chatError}
+                onSendToUser={handleSendToUser}
+                isSending={isSending}
+                sendSuccess={sendSuccess}
               />
             </div>
+
             <div>
               <AgentTracer
                 iterations={
@@ -384,29 +431,12 @@ export const TicketDetail: React.FC<TicketDetailProps> = ({
           </div>
         )}
 
-        {/* Approval */}
-        {tab === 'approval' && (
-          <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
-            <div className="lg:col-span-2">
-              <ApprovalPanel
-                ticketId={ticketId}
-                currentContent={ticket.finalContent ?? ticket.suggestion}
-                requiresReview={ticket.requiresReview}
-                approvalStatus={ticket.approvalStatus}
-                onApprovalStatusChange={handleRefresh}
-              />
-            </div>
-            <div>
-              <SafetyIndicator
-                decision={ticket.safetyDecision}
-                finalScore={ticket.safetyScores?.final}
-                rulePass={ticket.safetyScores?.rule}
-                heuristicScore={ticket.safetyScores?.heuristic}
-                llmScore={ticket.safetyScores?.llm}
-                reasons={ticket.safetyReasons}
-              />
-            </div>
-          </div>
+        {/* Pipeline Trace */}
+        {tab === 'pipeline' && (
+          <PipelineTrace
+            trace={(ticket.analysis as any)?.pipelineTrace}
+            ticketInput={ticket.content}
+          />
         )}
 
         {/* Logs */}

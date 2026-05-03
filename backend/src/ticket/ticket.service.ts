@@ -323,7 +323,7 @@ export class TicketService {
 
       const status =
         cascade.level === 3 && needsHuman
-          ? 'waiting_approval'
+          ? 'review'
           : 'completed';
 
       await this.ticketRepository.updateOutcome(ticketId, {
@@ -447,6 +447,7 @@ export class TicketService {
       'nextSteps',
       'editable',
       'chatOptimizable',
+      'pipelineTrace',
     ];
 
     return keys.reduce<Record<string, unknown>>((acc, key) => {

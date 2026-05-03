@@ -105,8 +105,14 @@ export class GeminiService implements OnModuleInit, IModelClient {
     callContext?: ModelCallContext,
   ): Promise<string> {
     try {
+      // systemInstruction must be passed to getGenerativeModel, NOT inside
+      // generationConfig — the Gemini API rejects unknown generationConfig
+      // fields with a 400 "Invalid JSON payload" error.
       const model = this.client.getGenerativeModel({
         model: this.model,
+        ...(systemPrompt
+          ? { systemInstruction: { parts: [{ text: systemPrompt }] } }
+          : {}),
       });
 
       // Convert messages to Gemini format
@@ -115,17 +121,12 @@ export class GeminiService implements OnModuleInit, IModelClient {
         parts: [{ text: msg.content }],
       }));
 
-      // Build generation config
+      // Build generation config (no system field here)
       const generationConfig: any = {
         temperature: options?.temperature ?? 0.3,
         maxOutputTokens: options?.maxTokens ?? 2048,
         topP: options?.topP ?? 0.95,
       };
-
-      // Add system prompt if provided
-      if (systemPrompt) {
-        generationConfig.system = systemPrompt;
-      }
 
       // Call the API. Wrap in transient-error retry: Gemini periodically
       // returns 503 "model is currently experiencing high demand"
@@ -248,6 +249,9 @@ export class GeminiService implements OnModuleInit, IModelClient {
     try {
       const model = this.client.getGenerativeModel({
         model: this.model,
+        ...(systemPrompt
+          ? { systemInstruction: { parts: [{ text: systemPrompt }] } }
+          : {}),
       });
 
       const contents: Content[] = messages.map((msg) => ({
@@ -259,10 +263,6 @@ export class GeminiService implements OnModuleInit, IModelClient {
         temperature: 0.3,
         maxOutputTokens: 2048,
       };
-
-      if (systemPrompt) {
-        generationConfig.system = systemPrompt;
-      }
 
       // Retry the stream-open call on transient errors. Once we start
       // iterating the stream we can't replay it, so retry only covers

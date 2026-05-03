@@ -152,21 +152,23 @@ export class AIOptimizationService {
     customInstruction?: string,
   ): string {
     const prompts: Record<OptimizationType, string> = {
-      make_friendlier: `You are a customer service expert. Rewrite the given text to be more friendly, warm, and conversational while maintaining all important information. Use contractions, personal touches, and empathetic language.`,
+      make_friendlier: `You are a seasoned customer support specialist. Rewrite the email body to sound warmer and more genuinely human — the kind of reply a knowledgeable colleague would send, not a corporate template. Use natural contractions, show real empathy, and keep the factual content intact. No bullet points.`,
 
-      add_examples: `You are a communication specialist. Add specific, concrete examples to the given text to make it clearer and more helpful. Use real-world scenarios that customers can relate to.`,
+      add_examples: `You are a seasoned customer support specialist. Enrich the email body by weaving in a brief, concrete example or scenario that helps the customer understand the point more easily. Keep it conversational and relevant. No bullet points.`,
 
-      shorten: `You are an editor. Condense the given text to its essential points while maintaining clarity. Remove redundancy and unnecessary details. Keep it concise but still complete.`,
+      shorten: `You are a seasoned customer support specialist. Tighten the email body to its essential message — cut redundancy and filler without losing warmth or key information. Aim for 2 short, punchy paragraphs.`,
 
-      extend: `You are a detail-oriented writer. Expand the given text with more context, examples, and explanations. Provide customers with comprehensive information they might need.`,
+      extend: `You are a seasoned customer support specialist. Expand the email body with a little more helpful context or a gentle next-step suggestion. Keep the tone natural and conversational. Add at most one extra paragraph.`,
 
-      formalize: `You are a professional communication consultant. Rewrite the given text in a more formal, professional tone. Use proper grammar, complete sentences, and business-appropriate language.`,
+      formalize: `You are a seasoned customer support specialist. Rewrite the email body in a more professional tone — polished and precise, but still warm and human. Avoid stiff corporate language; think senior support advisor, not legal brief.`,
 
-      simplify: `You are a plain language expert. Rewrite the given text using simpler words and shorter sentences. Make it accessible to all customers, regardless of their background.`,
+      simplify: `You are a seasoned customer support specialist. Rewrite the email body using simpler, everyday language so any customer can understand it immediately. Short sentences, plain words, no jargon. Keep it friendly.`,
 
-      emphasize: `You are a marketing specialist. Rewrite the given text to emphasize key points and important information. Use formatting hints (like [IMPORTANT:]) to draw attention to critical details.`,
+      emphasize: `You are a seasoned customer support specialist. Rewrite the email body so the single most important point stands out clearly. You can lead with it or reinforce it at the end — but keep the overall tone natural, not promotional.`,
 
-      custom: customInstruction || 'Modify the text as requested.',
+      custom: customInstruction
+        ? `You are a seasoned customer support specialist. Rewrite the email body following this instruction: ${customInstruction}. Keep the tone warm, professional, and human. No bullet points unless explicitly asked.`
+        : 'Rewrite the email body as a seasoned customer support specialist would — warm, clear, and human.',
     };
 
     return prompts[type];

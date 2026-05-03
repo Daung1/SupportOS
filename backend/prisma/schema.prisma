@@ -33,7 +33,7 @@ model User {
 model Ticket {
   id              String   @id @default(cuid())
   content         String   @db.Text
-  status          String   @default("pending") // pending, processing, waiting_approval, completed
+  status          String   @default("pending") // pending, processing, completed, failed, review, dlq
   priority        String   @default("medium") // low, medium, high
 
   // Submitting user (nullable for backwards compatibility with legacy rows).

@@ -2,7 +2,6 @@
 export type TicketStatus =
   | 'pending'
   | 'processing'
-  | 'waiting_approval'
   | 'completed'
   | 'failed'
   | 'review'

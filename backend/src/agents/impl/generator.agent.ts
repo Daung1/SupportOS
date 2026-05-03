@@ -64,6 +64,32 @@ export interface GeneratorSearchSource {
   url?: string;
 }
 
+/** One document entry in the pipeline trace (before/after filtering). */
+export interface PipelineDocTrace {
+  id?: string;
+  title: string;
+  score: number;
+  passedFilter: boolean;
+  filterReason: string;
+}
+
+/** Full pipeline trace stored on the ticket for debugging. */
+export interface PipelineTrace {
+  scenario: GeneratorOutputType;
+  classification: { type: string; confidence: number; reason: string };
+  relevanceThreshold: number;
+  allDocuments: PipelineDocTrace[];
+  usedDocuments: PipelineDocTrace[];
+  generationPath:
+    | 'no_documents'
+    | 'llm_success'
+    | 'llm_returned_empty'
+    | 'llm_failed'
+    | 'fallback_no_snippets'
+    | 'fallback_with_snippets';
+  llmError?: string;
+}
+
 export interface GeneratorAgentOutput {
   /** Type of response produced - frontend switches on this field */
   type: GeneratorOutputType;
@@ -110,6 +136,9 @@ export interface GeneratorAgentOutput {
   nextSteps?: GeneratorNextStep[];
   /** Whether this output requires human judgement before sending */
   requiresHumanJudgment?: boolean;
+
+  /** Full pipeline trace for debugging - visible in the Pipeline tab. */
+  pipelineTrace?: PipelineTrace;
 }
 
 /** Internal action shape produced by parseAction() */
@@ -328,6 +357,13 @@ export class GeneratorAgent extends BaseAgent {
   // ---------------------------------------------------------------------------
   // Scenario B: DOC_ANSWER - editable draft + AI chat optimization
   // ---------------------------------------------------------------------------
+  // Minimum relevance score for a document to be used in draft generation.
+  // With pseudo (hash-based) embeddings, unrelated documents routinely score
+  // 60-67%, so the threshold must be set high enough to exclude them while
+  // still admitting genuinely relevant content. 0.70 provides a practical
+  // cut-off; raise further if off-topic docs continue to slip through.
+  private static readonly MIN_DOC_RELEVANCE = 0.70;
+
   private async handleScenarioB_Editable(
     context: ISessionContext,
     action: GeneratorAction,
@@ -336,20 +372,61 @@ export class GeneratorAgent extends BaseAgent {
     const searcherResult = shared.get('searcherResult') ?? {
       documentsFound: 0,
     };
-    const documents: any[] = Array.isArray(searcherResult.documents)
+    const allDocuments: any[] = Array.isArray(searcherResult.documents)
       ? searcherResult.documents
       : Array.isArray(searcherResult.sources)
         ? searcherResult.sources
         : [];
 
-    const draftContent = await this.generateDraftFromSearch(context, documents);
+    const threshold = GeneratorAgent.MIN_DOC_RELEVANCE;
+
+    // Build full doc trace for ALL retrieved documents (before any filtering).
+    const allDocTraces: PipelineDocTrace[] = allDocuments.map((doc: any) => {
+      const score = Number((doc.relevance ?? doc.score ?? 0).toFixed(4));
+      const passed = score >= threshold;
+      return {
+        id: doc.id,
+        title: doc.title ?? 'Untitled',
+        score,
+        passedFilter: passed,
+        filterReason: passed
+          ? `Score ${score} ≥ threshold ${threshold}`
+          : `Score ${score} < threshold ${threshold} — excluded as likely irrelevant`,
+      };
+    });
+
+    // Only keep documents whose relevance/similarity score clears the minimum
+    // threshold. Passing in low-relevance docs causes the LLM (and the
+    // deterministic fallback) to produce off-topic, incoherent responses.
+    const relevantDocuments = allDocuments.filter(
+      (doc: any) => (doc.relevance ?? doc.score ?? 0) >= threshold,
+    );
+    const usedDocTraces = allDocTraces.filter((d) => d.passedFilter);
+
+    // Mutable trace object — generateDraftFromSearch will set the path.
+    const trace: Partial<PipelineTrace> & { generationPath: PipelineTrace['generationPath'] } = {
+      scenario: 'EDITABLE_RESPONSE',
+      classification: {
+        type: action.classification.type,
+        confidence: action.classification.confidence,
+        reason: action.classification.reason,
+      },
+      relevanceThreshold: threshold,
+      allDocuments: allDocTraces,
+      usedDocuments: usedDocTraces,
+      generationPath: 'no_documents',
+    };
+
+    const draftContent = await this.generateDraftFromSearch(context, relevantDocuments, trace);
 
     const editableRecord = this.editableContentManager.createEditableContent(
       context.taskId,
       draftContent,
     );
 
-    const searchResults: GeneratorSearchSource[] = documents
+    // Only surface reference links for documents that actually passed the
+    // relevance filter, so users don't see unrelated sources cited.
+    const searchResults: GeneratorSearchSource[] = relevantDocuments
       .slice(0, 5)
       .map((doc: any) => ({
         id: doc.id,
@@ -376,6 +453,7 @@ export class GeneratorAgent extends BaseAgent {
       chatOptimizable: true,
       searchResults,
       editableRecordId: editableRecord.currentVersion.versionId,
+      pipelineTrace: trace as PipelineTrace,
     };
   }
 
@@ -527,11 +605,14 @@ export class GeneratorAgent extends BaseAgent {
   private async generateDraftFromSearch(
     context: ISessionContext,
     documents: any[],
+    trace?: { generationPath: PipelineTrace['generationPath']; llmError?: string },
   ): Promise<string> {
     if (!documents || documents.length === 0) {
+      if (trace) trace.generationPath = 'no_documents';
       return (
-        `Thank you for reaching out. Based on our current information, here is what we can share regarding "${context.input.substring(0, 120).trim()}". ` +
-        'We are looking into the details and will follow up with a more complete answer as soon as possible.'
+        `Thanks so much for reaching out — I can see you have a question about "${context.input.substring(0, 120).trim()}".\n\n` +
+        `I want to make sure I give you the most accurate answer possible, so I'm going to look into this a little further.\n\n` +
+        `I'll be back in touch shortly. In the meantime, feel free to share any additional details that might help me assist you faster.`
       );
     }
 
@@ -543,16 +624,30 @@ export class GeneratorAgent extends BaseAgent {
       )
       .join('\n');
 
-    const systemPrompt = `You are a customer-support writer.  Combine the referenced documents into a single friendly reply for the customer.
+    const systemPrompt = `You are a seasoned customer support specialist writing an email reply body.
+Your single most important goal is to directly and helpfully answer the customer's actual question.
 
-Rules:
-- Write in the language of the customer question.
-- 2-4 short paragraphs.
-- Answer the question directly first, then add supporting details.
-- Do NOT invent facts that are not in the references.
-- End with a brief offer of further help.`;
+Step 1 — Understand the question:
+Before writing anything, identify every distinct concern or request in the customer's message.
+For example, if they ask "how do I use the product?" AND "can you reopen the chat channel?", both must be addressed.
 
-    const userPrompt = `Customer question:\n${context.input}\n\nReference documents:\n${excerpts}\n\nWrite the draft reply:`;
+Step 2 — Assess the reference documents:
+Read each reference document and ask: "Does this document actually help answer the customer's question?"
+- If a document is clearly about a different topic (e.g. returns, shipping, refunds) and the customer did NOT ask about those topics, discard it completely — do not mention it, do not quote it.
+- Only use documents that genuinely address what the customer asked.
+- If none of the documents are relevant, answer using your general knowledge as a support specialist and common platform/product support practices.
+
+Step 3 — Write the reply:
+- Open with one empathetic sentence that reflects the customer's specific situation.
+- Answer the customer's question(s) logically, clearly, and in the correct order.
+- Suggest practical alternatives or next steps where applicable (e.g. if a chat channel is closed, suggest email or phone support).
+- Write in 2–3 short natural paragraphs — absolutely no bullet points, no numbered lists, no headers.
+- Use contractions and conversational language to sound human, not robotic.
+- Close with a warm, genuine offer to help with anything else.
+- Write in the same language as the customer's question.
+- Do NOT fabricate specific policies, phone numbers, URLs, or figures not found in the documents.`;
+
+    const userPrompt = `Customer question:\n${context.input}\n\nReference documents (only use those directly relevant to the question; ignore all others):\n${excerpts}\n\nWrite the reply body only (greeting "Dear..." and sign-off "Best regards..." are added separately — do not include them):`;
 
     try {
       const response = await context.modelClient.call(
@@ -563,18 +658,49 @@ Rules:
       );
       const trimmed = (response || '').trim();
       if (trimmed.length > 0) {
+        if (trace) trace.generationPath = 'llm_success';
         return trimmed;
       }
-    } catch {
+      if (trace) trace.generationPath = 'llm_returned_empty';
+    } catch (err) {
+      if (trace) {
+        trace.generationPath = 'llm_failed';
+        trace.llmError = err instanceof Error ? err.message : String(err);
+      }
       // Fall back to deterministic draft below.
     }
 
-    let draft = 'Based on our documentation:\n\n';
-    for (const doc of topDocs) {
-      draft += `From "${doc.title ?? 'Untitled'}":\n${(doc.excerpt ?? doc.content ?? '').toString().substring(0, 200)}\n\n`;
+    // Deterministic fallback: the LLM call failed, but we already filtered
+    // documents to only relevant ones above. Summarise their key information
+    // in natural prose rather than dumping raw excerpts.
+    // If somehow this path is reached with no usable content, return a
+    // graceful holding message rather than garbled document fragments.
+    const usableSnippets = topDocs
+      .map((doc: any) => (doc.excerpt ?? doc.content ?? '').toString().trim())
+      .filter((s) => s.length > 30);
+
+    if (usableSnippets.length === 0) {
+      if (trace) trace.generationPath = 'fallback_no_snippets';
+      return (
+        `Thanks for getting in touch about this.\n\n` +
+        `I want to make sure I give you an accurate and helpful answer, so let me look into this properly for you. ` +
+        `Could you share a little more detail about what you're experiencing? ` +
+        `That will help me point you in the right direction much faster.\n\n` +
+        `I'll get back to you as soon as possible.`
+      );
     }
-    draft += 'If you need more information, feel free to ask for clarification.';
-    return draft;
+
+    if (trace) trace.generationPath = 'fallback_with_snippets';
+    // Build a coherent paragraph from the relevant snippets without dumping
+    // raw document text or truncated bullet lists.
+    const combined = usableSnippets
+      .map((s) => s.substring(0, 200))
+      .join(' ');
+    return (
+      `Thanks for reaching out.\n\n` +
+      `Based on our documentation, here's what I can share that may help: ${combined}\n\n` +
+      `If you have any follow-up questions or this doesn't fully address your concern, please let me know and I'll be happy to help further.`
+    );
   }
 
   /**
@@ -583,13 +709,29 @@ Rules:
    * returned so the ticket can still be handled manually.
    */
   private async generateSuggestion(context: ISessionContext): Promise<string> {
-    const systemPrompt = `You are an assistant for customer-support staff.
-Generate a concise (2-3 short paragraphs) draft reply they can use as a starting point.
-Be friendly and actionable, but do not invent policy specifics.`;
+    const systemPrompt = `You are a seasoned customer support specialist drafting an email reply body for a colleague to review and personalise before sending.
+
+Your single most important goal is to answer the customer's actual question clearly and helpfully.
+
+Step 1 — Understand every part of the question:
+Read the customer's message carefully. Identify every distinct issue or request they raise.
+Do not skip sub-questions. If they ask two things, answer both.
+
+Step 2 — Respond logically:
+- Address the most important concern first, then supporting details.
+- Suggest concrete alternatives or next steps where the customer's preferred option is unavailable (e.g. if a chat channel is closed, tell them how else to reach support).
+- Do not give a generic, off-topic response.
+
+Writing style:
+- Open with one natural empathetic sentence that reflects the customer's specific situation.
+- Write in 2–3 short natural paragraphs — no bullet points, no numbered lists.
+- Use contractions and plain language to sound like a real person.
+- Keep it concise: roughly 80–130 words.
+- Do not fabricate policies, phone numbers, URLs, or figures.`;
 
     try {
       const response = await context.modelClient.call(
-        [{ role: 'user', content: `Customer ticket: ${context.input}` }],
+        [{ role: 'user', content: `Customer question:\n${context.input}` }],
         systemPrompt,
         { temperature: 0.7, maxTokens: 400 },
         this.buildCallContext(context),
@@ -602,6 +744,10 @@ Be friendly and actionable, but do not invent policy specifics.`;
       // fall through
     }
 
-    return 'Thank you for contacting us. We are looking into your request and will follow up shortly. Meanwhile, could you share any additional context that might help us resolve it faster?';
+    return (
+      `Thanks for getting in touch.\n\n` +
+      `I've had a look at your message and want to make sure I get back to you with the right answer. Could you share a bit more context so I can look into this properly?\n\n` +
+      `Once I have a clearer picture, I'll get back to you as quickly as I can.`
+    );
   }
 }

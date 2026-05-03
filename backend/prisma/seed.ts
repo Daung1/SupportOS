@@ -81,10 +81,10 @@ function generatePseudoEmbedding(text: string): number[] {
 // Fixed demo users so the frontend can preselect identities by stable id
 // without needing a real auth flow.
 const DEMO_USERS = [
-  { id: 'user-alice', name: 'Alice (User)', email: 'alice@example.com', role: 'user' },
-  { id: 'user-bob', name: 'Bob (User)', email: 'bob@example.com', role: 'user' },
-  { id: 'supporter-charlie', name: 'Charlie (Supporter)', email: 'charlie@example.com', role: 'supporter' },
-  { id: 'supporter-dana', name: 'Dana (Supporter)', email: 'dana@example.com', role: 'supporter' },
+  { id: 'user-alice', name: 'Alice', email: 'alice@example.com', role: 'user' },
+  { id: 'user-bob', name: 'Bob', email: 'bob@example.com', role: 'user' },
+  { id: 'supporter-charlie', name: 'Charlie', email: 'charlie@example.com', role: 'supporter' },
+  { id: 'supporter-dana', name: 'Dana', email: 'dana@example.com', role: 'supporter' },
 ];
 
 async function main() {

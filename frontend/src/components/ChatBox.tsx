@@ -31,7 +31,6 @@ interface ChatBoxProps {
 
 const PROCESSED_STATUSES = new Set([
   'completed',
-  'waiting_approval',
   'failed',
   'dlq',
 ]);
@@ -55,7 +54,7 @@ const REVIEWING_MESSAGE =
  * Instead:
  *   - status=`completed` AND we have a real `ticket.suggestion`
  *     -> show the suggestion (the actual AI-generated answer)
- *   - everything else (waiting_approval, failed, dlq, completed-with-
+ *   - everything else (failed, dlq, completed-with-
  *     no-suggestion, low-confidence multi-agent fallthrough)
  *     -> show the friendly REVIEWING_MESSAGE
  *
@@ -76,10 +75,9 @@ const getAnalysisSummary = (ticket: Ticket): string | null => {
     return suggestion;
   }
 
-  // waiting_approval => human needs to vet the AI suggestion before
-  // we expose it; "completed" without a suggestion => something went
-  // sideways; anything else still in flight => not ready yet. All
-  // collapse to the same friendly status line.
+  // "completed" without a suggestion => something went sideways;
+  // anything else still in flight => not ready yet.
+  // All collapse to the same friendly status line.
   return REVIEWING_MESSAGE;
 };
 

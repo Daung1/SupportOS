@@ -103,7 +103,6 @@ export const TicketAnalysisCard: React.FC<TicketAnalysisCardProps> = ({
   const statusBadgeColor: Record<string, string> = {
     pending: 'bg-yellow-100 text-yellow-700',
     processing: 'bg-blue-100 text-blue-700',
-    waiting_approval: 'bg-purple-100 text-purple-700',
     completed: 'bg-green-100 text-green-700',
     failed: 'bg-red-100 text-red-700',
     dlq: 'bg-red-200 text-red-800',

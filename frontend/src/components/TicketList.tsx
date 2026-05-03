@@ -23,7 +23,6 @@ export const TicketList: React.FC<TicketListProps> = ({ onSelectTicket }) => {
   const statusColors: Record<TicketStatus, string> = {
     pending: 'bg-yellow-100 text-yellow-800',
     processing: 'bg-blue-100 text-blue-800',
-    waiting_approval: 'bg-purple-100 text-purple-800',
     completed: 'bg-green-100 text-green-800',
     failed: 'bg-red-100 text-red-800',
     review: 'bg-purple-100 text-purple-800',
@@ -53,7 +52,6 @@ export const TicketList: React.FC<TicketListProps> = ({ onSelectTicket }) => {
           <option value="">All Statuses</option>
           <option value="pending">Pending</option>
           <option value="processing">Processing</option>
-          <option value="waiting_approval">Waiting Approval</option>
           <option value="completed">Completed</option>
           <option value="failed">Failed</option>
           <option value="review">Review</option>

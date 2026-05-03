@@ -5,7 +5,7 @@
 
 export interface TicketStageEvent {
   ticketId: string;
-  stage: 'queued' | 'processing' | 'completed' | 'failed' | 'waiting_approval';
+  stage: 'queued' | 'processing' | 'completed' | 'failed' | 'review';
   timestamp: Date;
   message?: string;
 }
