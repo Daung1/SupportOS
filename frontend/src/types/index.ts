@@ -186,6 +186,14 @@ export interface CreateTicketRequest {
   content: string;
   priority?: 'low' | 'medium' | 'high';
   userId?: string;
+  /**
+   * When true, the backend cascade skips Layer 1 FAQ matching and runs
+   * the full multi-agent pipeline. Set this from the chat "Generate as
+   * Ticket" flow so the ticket gets a real pipeline trace instead of
+   * the FAQ that was already shown (and dismissed) in the quick-answer
+   * step. Defaults to false for the standalone "submit ticket" form.
+   */
+  forceDeepAnalysis?: boolean;
 }
 
 export interface ApproveTicketRequest {

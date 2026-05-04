@@ -29,57 +29,11 @@ interface ChatBoxProps {
   onError?: (error: string) => void;
 }
 
-const PROCESSED_STATUSES = new Set([
-  'completed',
-  'failed',
-  'dlq',
-]);
-
 const FAILED_STATUSES = new Set(['failed', 'dlq']);
 
 const REVIEWING_MESSAGE =
   'Our team is reviewing this ticket and will get back to you shortly.';
 
-/**
- * Build the system reply that appears under each persisted ticket in
- * the chat transcript.
- *
- * Design rule: the chat is a customer-facing surface, not a debug
- * panel. So we NEVER expose engineering metadata like
- *
- *   "AI processed this ticket via MultiAgent: OTHER (50% confidence)."
- *   "Max iterations (10) reached without finishing"
- *   "Gemini API call failed: 503 ..."
- *
- * Instead:
- *   - status=`completed` AND we have a real `ticket.suggestion`
- *     -> show the suggestion (the actual AI-generated answer)
- *   - everything else (failed, dlq, completed-with-
- *     no-suggestion, low-confidence multi-agent fallthrough)
- *     -> show the friendly REVIEWING_MESSAGE
- *
- * The detailed metadata is still visible in the dedicated AI Response /
- * ticket-detail panels for engineers.
- */
-const getAnalysisSummary = (ticket: Ticket): string | null => {
-  if (FAILED_STATUSES.has(ticket.status)) {
-    return REVIEWING_MESSAGE;
-  }
-
-  const suggestion = ticket.suggestion?.trim();
-
-  // Successful end state: the cascade produced an answer the user
-  // can act on. Echo it directly into the chat so the conversation
-  // ends naturally instead of with a vague "we'll get back to you".
-  if (ticket.status === 'completed' && suggestion) {
-    return suggestion;
-  }
-
-  // "completed" without a suggestion => something went sideways;
-  // anything else still in flight => not ready yet.
-  // All collapse to the same friendly status line.
-  return REVIEWING_MESSAGE;
-};
 
 const formatTimestamp = (iso: string): string => {
   try {
@@ -126,29 +80,17 @@ const buildMessages = (tickets: Ticket[]): ChatMessage[] => {
       ticketId: ticket.id,
     });
 
-    const summary = getAnalysisSummary(ticket);
-    if (summary && PROCESSED_STATUSES.has(ticket.status)) {
-      messages.push({
-        id: `analysis-${ticket.id}`,
-        type: 'system',
-        content: summary,
-        timestamp: formatTimestamp(ticket.updatedAt ?? ticket.createdAt),
-        // Pin analyses 1ms after their ticket so they always sort
-        // directly below the user bubble even when the AI replied in
-        // the same wall-clock millisecond.
-        createdAt: Math.max(ticketUpdatedMs, ticketCreatedMs + 1),
-        ticketId: ticket.id,
-      });
-    } else {
-      messages.push({
-        id: `pending-${ticket.id}`,
-        type: 'system',
-        content: `✓ We have received your ticket and will reply as soon as possible. Thank you for your patience.`,
-        timestamp: formatTimestamp(ticket.createdAt),
-        createdAt: ticketCreatedMs + 1,
-        ticketId: ticket.id,
-      });
-    }
+    // Always show the same "received and will review" message for all tickets
+    // in the chat interface. The detailed AI analysis/suggestion lives in the
+    // TicketDetail panel, not in the conversational chat.
+    messages.push({
+      id: `pending-${ticket.id}`,
+      type: 'system',
+      content: `✓ We have received your ticket and will reply as soon as possible. Thank you for your patience.`,
+      timestamp: formatTimestamp(ticket.createdAt),
+      createdAt: ticketCreatedMs + 1,
+      ticketId: ticket.id,
+    });
   }
   return messages;
 };
@@ -372,6 +314,12 @@ export const ChatBox: React.FC<ChatBoxProps> = ({
         content: pendingMsg.content,
         priority: 'medium',
         userId: currentUser.id,
+        // The user reached this button because they already saw (and
+        // declined) the L1 quick answer. Running L1 a second time on
+        // the backend would just hand back the same FAQ. Tell the
+        // cascade to skip L1 and run the full multi-agent pipeline so
+        // the ticket gets a deeper analysis + a real Pipeline Trace.
+        forceDeepAnalysis: true,
       };
 
       const ticket = await createTicket(req);

@@ -58,7 +58,12 @@ export class TicketService {
       priority,
       userId,
     });
-    this.dispatchProcessing(ticket.id, dto.content, priority);
+    this.dispatchProcessing(
+      ticket.id,
+      dto.content,
+      priority,
+      dto.forceDeepAnalysis ?? false,
+    );
     return ticket;
   }
 
@@ -218,12 +223,19 @@ export class TicketService {
     ticketId: string,
     content: string,
     priority: 'low' | 'medium' | 'high',
+    forceDeepAnalysis: boolean,
   ): void {
     void this.concurrentOrchestrator
       .submit({
         id: ticketId,
         content,
         priority,
+        // Maps to CascadeOrchestrator.processTicket(skipLevel1=true).
+        // The chat UI sets this when the user clicks "Generate as
+        // Ticket" after already seeing the L1 quick answer, so the
+        // cascade runs the full multi-agent pipeline (with trace)
+        // instead of returning the same FAQ a second time.
+        skipLevel1: forceDeepAnalysis,
       })
       .then((result) => this.applyTaskOutcome(ticketId, result))
       .catch((err: unknown) => {

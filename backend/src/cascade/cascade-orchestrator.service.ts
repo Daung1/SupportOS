@@ -21,20 +21,27 @@
  * signal, so we either answer (L1) or escalate (L3) — no third path.
  *
  * Flow:
- *   processTicket(ctx, skipLevel3?)
+ *   processTicket(ctx, skipLevel3?, skipLevel1?)
  *     -> L0.triage(text)
  *     -> if !inDomain or intent in {greeting, chitchat, abuse}:
  *          return canned friendly response (level 0, success=false,
  *          requiresLevel3=false). Frontend renders this directly.
  *     -> if intent in {complaint, unclear}:
- *          return clarification prompt (level 0, success=false,
+ *          if skipLevel1 (force-deep mode): fall through to L3 anyway
+ *          else return clarification prompt (level 0, success=false,
  *          requiresLevel3=true so caller can offer ticket creation).
  *     -> intent=question:
  *          q := reformulated ?? raw
- *          L1.match(q, categoryHint)
+ *          if skipLevel1 (force-deep mode): bypass L1, go straight to L3
+ *          else L1.match(q, categoryHint)
  *          if matched -> return level 1 answer
  *          if skipLevel3 -> return "no quick answer" with category
  *          else -> L3.execute(ctx) -> return level 3 answer
+ *
+ * skipLevel1 is set when the user has already seen a quick (L1) answer
+ * and explicitly chose "Generate as Ticket" to escalate. Re-running L1
+ * would just hand back the same FAQ they already declined; we want a
+ * full pipeline run so the ticket gets a proper trace + deeper answer.
  */
 
 import { Inject, Injectable, Logger, Optional } from '@nestjs/common';
@@ -137,12 +144,18 @@ export class CascadeOrchestrator {
   async processTicket(
     context: ISessionContext,
     skipLevel3 = false,
+    skipLevel1 = false,
   ): Promise<CascadeResult> {
     const startedAt = Date.now();
     const ticketText = context.input ?? '';
     const logCtx = this.logContextFrom(context);
 
-    this.appendLog({ ...logCtx, type: 'cascade.start', timestamp: startedAt });
+    this.appendLog({
+      ...logCtx,
+      type: 'cascade.start',
+      timestamp: startedAt,
+      payload: { skipLevel1, skipLevel3 },
+    });
 
     try {
       // ------------------- Layer 0: Triage -----------------------
@@ -161,6 +174,9 @@ export class CascadeOrchestrator {
       });
 
       // OOD or pure social -> friendly response, do not retrieve.
+      // Note: we still short-circuit here even in skipLevel1 (force-deep)
+      // mode, because running the full multi-agent pipeline on
+      // chitchat/abuse would burn tokens for no useful answer.
       if (
         !triage.inDomain ||
         triage.intent === 'greeting' ||
@@ -190,7 +206,13 @@ export class CascadeOrchestrator {
 
       // Vague/complaint -> ask for clarification, but still allow
       // the user to escalate to a real ticket if they choose.
-      if (triage.intent === 'complaint' || triage.intent === 'unclear') {
+      // When skipLevel1 is set the user has already explicitly chosen
+      // to escalate, so we bypass the clarification gate and let the
+      // multi-agent pipeline handle vague input directly.
+      if (
+        !skipLevel1 &&
+        (triage.intent === 'complaint' || triage.intent === 'unclear')
+      ) {
         const result: CascadeResult = {
           level: 0,
           source: 'Triage',
@@ -212,47 +234,63 @@ export class CascadeOrchestrator {
         return result;
       }
 
-      // intent === 'question': prefer the rewritten form for
-      // retrieval since paraphrases embed slightly better.
-      const queryForL1 = triage.reformulated ?? ticketText;
-
       // ------------------- Layer 1: Vector FAQMatcher --------------
-      const faqResult = await this.faqMatcher.match(
-        queryForL1,
-        triage.category ?? undefined,
-      );
-      if (faqResult.matched) {
-        const result = this.buildLevel1Result(faqResult, startedAt, triage);
+      // skipLevel1 (force-deep mode): user already saw the FAQ in the
+      // quick-answer step and chose "Generate as Ticket" anyway, so
+      // re-running L1 here would just return the same FAQ they
+      // declined. Jump straight to L3 instead.
+      let faqResult: FAQMatchResult | undefined;
+      if (!skipLevel1) {
+        // intent === 'question': prefer the rewritten form for
+        // retrieval since paraphrases embed slightly better.
+        const queryForL1 = triage.reformulated ?? ticketText;
+
+        faqResult = await this.faqMatcher.match(
+          queryForL1,
+          triage.category ?? undefined,
+        );
+        if (faqResult.matched) {
+          const result = this.buildLevel1Result(faqResult, startedAt, triage);
+          this.appendLog({
+            ...logCtx,
+            type: 'cascade.level1_hit',
+            timestamp: Date.now(),
+            payload: {
+              faqId: faqResult.faqId,
+              confidence: faqResult.confidence,
+              margin: faqResult.margin,
+              categoryHint: triage.category,
+              processingTimeMs: faqResult.processingTime,
+            },
+          });
+          this.appendLog({
+            ...logCtx,
+            type: 'cascade.end',
+            timestamp: Date.now(),
+            payload: { level: 1, success: true },
+          });
+          return result;
+        }
         this.appendLog({
           ...logCtx,
-          type: 'cascade.level1_hit',
+          type: 'cascade.level1_miss',
           timestamp: Date.now(),
           payload: {
-            faqId: faqResult.faqId,
             confidence: faqResult.confidence,
+            reason: faqResult.reason,
             margin: faqResult.margin,
-            categoryHint: triage.category,
-            processingTimeMs: faqResult.processingTime,
           },
         });
+      } else {
         this.appendLog({
           ...logCtx,
-          type: 'cascade.end',
+          type: 'cascade.level1_skipped',
           timestamp: Date.now(),
-          payload: { level: 1, success: true },
+          payload: {
+            reason: 'Force-deep analysis mode (user escalated past quick answer)',
+          },
         });
-        return result;
       }
-      this.appendLog({
-        ...logCtx,
-        type: 'cascade.level1_miss',
-        timestamp: Date.now(),
-        payload: {
-          confidence: faqResult.confidence,
-          reason: faqResult.reason,
-          margin: faqResult.margin,
-        },
-      });
 
       // Quick-answer mode: don't burn LLM tokens on L3.
       if (skipLevel3) {
@@ -274,7 +312,11 @@ export class CascadeOrchestrator {
           success: false,
           category: triage.category ?? 'requires_deep_analysis',
           answer: '',
-          confidence: faqResult.confidence,
+          // faqResult is only undefined when skipLevel1 is true (L1
+          // never ran). The combination of skipLevel1+skipLevel3 is
+          // not produced by any current caller, but be defensive:
+          // report 0 confidence rather than crashing.
+          confidence: faqResult?.confidence ?? 0,
           processingTimeMs: Date.now() - startedAt,
           error: 'No quick answer found. Please generate a ticket for deep analysis.',
           triage,

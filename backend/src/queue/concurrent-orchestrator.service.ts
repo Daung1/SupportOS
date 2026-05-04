@@ -128,7 +128,10 @@ export class ConcurrentOrchestrator {
       taskId: context.taskId,
       type: 'queue.submit',
       timestamp: submittedAt,
-      payload: { priority: ticket.priority },
+      payload: {
+        priority: ticket.priority,
+        skipLevel1: ticket.skipLevel1 ?? false,
+      },
     });
 
     let queueWaitMs = 0;
@@ -217,7 +220,11 @@ export class ConcurrentOrchestrator {
 
     for (let attempt = 0; attempt <= maxRetries; attempt++) {
       try {
-        const cascadeResult = await this.cascadeOrchestrator.processTicket(context);
+        const cascadeResult = await this.cascadeOrchestrator.processTicket(
+          context,
+          false,
+          ticket.skipLevel1 ?? false,
+        );
         retriesUsed = attempt;
         const envelope: ConcurrentTaskResult = {
           ticketId: ticket.id,

@@ -59,11 +59,14 @@ export interface PipelineLogEvent {
     // L1 (FAQ), L2 (SimpleFilter) or escalated to L3 (MultiAgent) on
     // top of the per-agent TAO events.
     | 'cascade.start'
+    | 'cascade.level0_triage'
     | 'cascade.level1_hit'
     | 'cascade.level1_miss'
+    | 'cascade.level1_skipped'
     | 'cascade.level2_hit'
     | 'cascade.level2_miss'
     | 'cascade.level3_entry'
+    | 'cascade.level3_skipped'
     | 'cascade.level3_complete'
     | 'cascade.end'
     | 'cascade.error'

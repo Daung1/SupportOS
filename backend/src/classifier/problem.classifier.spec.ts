@@ -143,5 +143,26 @@ describe('ProblemClassifier', () => {
 
       expect(result.type).not.toBe(ProblemType.TECH_ISSUE);
     });
+
+    it('does NOT treat defective-item / exchange / return as TECH_ISSUE (hang inside exchange)', async () => {
+      // Regression: naive substring "hang" matched inside "exchange",
+      // combined with triage=product prior, wrongly escalated to Scenario C.
+      const triage: SharedTriageResult = {
+        inDomain: true,
+        intent: 'question',
+        category: 'product',
+        confidence: 0.9,
+        reformulated: null,
+        reason: 'defective item policy',
+      };
+      const ctx = makeContext(
+        "I found that the item is defective. Can I exchange it? If an exchange isn't possible, I would like to return it. What is the process for this?",
+        { triageResult: triage },
+      );
+
+      const result = await classifier.classifyProblem(ctx);
+
+      expect(result.type).not.toBe(ProblemType.TECH_ISSUE);
+    });
   });
 });

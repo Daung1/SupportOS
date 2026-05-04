@@ -142,7 +142,7 @@ export class ProblemClassifier {
     let matchCount = 0;
 
     for (const keyword of CLASSIFICATION_RULES.techIssueKeywords) {
-      if (input.includes(keyword.toLowerCase())) {
+      if (this.matchesTechKeyword(input, keyword)) {
         matchedKeywords.push(keyword);
         matchCount++;
       }
@@ -156,6 +156,21 @@ export class ProblemClassifier {
       reason: `Found ${matchCount} tech issue keywords`,
       matchedKeywords,
     };
+  }
+
+  /**
+   * Multi-word phrases ("does not work", "system error") keep the
+   * historical substring behaviour. Single tokens use whole-word
+   * matching so short keys like "hang" do not false-positive inside
+   * "exchange", and "bug" does not fire inside "debug".
+   */
+  private matchesTechKeyword(input: string, keyword: string): boolean {
+    const lower = keyword.toLowerCase();
+    if (/\s/.test(lower)) {
+      return input.includes(lower);
+    }
+    const escaped = lower.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    return new RegExp(`\\b${escaped}\\b`, 'i').test(input);
   }
 
   /**

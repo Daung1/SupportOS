@@ -36,6 +36,15 @@ export interface SubmitTicket {
   taskId?: string;
   /** Free-form attribution (userId, channel, etc.) merged into metadata. */
   metadata?: Record<string, any>;
+  /**
+   * When true, the cascade skips Layer 1 (FAQ matching) and the
+   * complaint/unclear short-circuit, going straight to Layer 3
+   * multi-agent. Used by the "Generate as Ticket" flow after the user
+   * has already seen and rejected the quick FAQ answer, so we generate
+   * a real pipeline trace + deeper response instead of returning the
+   * same FAQ they already declined.
+   */
+  skipLevel1?: boolean;
 }
 
 @Injectable()
