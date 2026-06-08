@@ -1,5 +1,11 @@
 # SupportOS - AI Agent System
 
+<p align="center">
+<a href="#english-version">English</a> | <a href="#zh-version">中文</a>
+</p>
+
+<a id="zh-version"></a>
+
 🚀 企业级 AI 驱动的支持系统，采用 NestJS + React + Claude API 架构
 
 [![TypeScript](https://img.shields.io/badge/TypeScript-100%25-blue)](https://www.typescriptlang.org/)
